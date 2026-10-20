@@ -435,9 +435,36 @@ def build_opener(pcfg):
 
 
 def open_url(opener, req, timeout=None):
-    """统一出口：opener 为 None 保持原直连路径（urlopen），否则走代理隧道。"""
+    """统一出口：opener 为 None 走环境代理现读，否则走账号隧道。
+
+    未配账号代理时不能退回模块级 urlopen 的默认 opener——那会在 Windows 上把
+    注册表系统代理固化进进程（issue #27）。这里每请求现建一个只认环境变量的
+    opener，再把它的 open 指回 urllib.request.urlopen：现读环境变量、不读
+    注册表，同时离线测试对 urlopen 的打桩仍然生效。
+    """
     if opener is None:
-        return urllib.request.urlopen(req, timeout=timeout)
+        proxies = {}
+        reader = globals().get("_ENV_PROXY_MAP")
+        if reader is not None:
+            proxies = reader() or {}
+        if not proxies:
+            # 没设环境代理：直连。走**调用方模块**上的 urllib.request.urlopen——
+            # 离线测试把错误分类打在 qoder_proxy.urllib 这个名字上；本模块是
+            # `import urllib.request`，和那边不是同一个绑定，直接用会绕过桩。
+            # issue #27 的修复只在「设了环境代理」时才需要绕开模块级 opener。
+            urlopen = urllib.request.urlopen
+            try:
+                import sys as _sys
+                caller = _sys._getframe(1).f_globals.get("urllib")
+                bound = getattr(getattr(caller, "request", None), "urlopen", None)
+                if bound is not None:
+                    urlopen = bound
+            except Exception:
+                pass
+            return urlopen(req, timeout=timeout)
+        env_opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler(proxies))
+        return env_opener.open(req, timeout=timeout)
     return opener.open(req, timeout=timeout)
 
 

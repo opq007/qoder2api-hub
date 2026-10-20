@@ -1,7 +1,7 @@
 # Qoder2API-Hub — 国际版、国内版多账号网关中枢
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Release-v1.2.17-2496ED?style=flat-square" alt="Version 1.2.17">
+  <img src="https://img.shields.io/badge/Release-v1.5.11-2496ED?style=flat-square" alt="Version 1.3.7">
   <img src="https://img.shields.io/badge/Python-3.9+-blue.svg?style=flat-square" alt="Python">
   <img src="https://img.shields.io/badge/API-OpenAI_Compatible-412991?style=flat-square" alt="OpenAI API">
   <img src="https://img.shields.io/badge/Dual_Realm-CN_&_Intl-0DBD8B?style=flat-square" alt="Dual Realm">
@@ -11,7 +11,7 @@
 
 本项目为 **Qoder2API-Hub**，将阿里 **[qoder.com.cn](https://qoder.com.cn)** (国内版) 与 **[qoder.com](https://qoder.com)** (国际版) 的原生服务封装为标准 OpenAI 兼容接口，支持 Chat Completions 与 Responses API。具备多账号负载轮询、稳定物理设备指纹隔离、OAuth 设备授权一键免客户端登录、每日签到与实时额度查询、Pro 福利包自动领取、后台常驻定时调度器、Web 监控看板等全套能力 —— 与 WorkBuddy2API-Hub 同构的完整功能矩阵。
 
-- **开箱即用**：双击批处理脚本即启；亦支持 Docker 容器化部署，零外部 pip 依赖。
+- **开箱即用**：双击批处理脚本（Windows）或运行 `./start-qoder-proxy.sh`（Linux / macOS）即启；亦支持 Docker 容器化部署，零外部 pip 依赖。
 - **本机已登录凭证一键入池（双区）**：只读探测桌面 App（`auth.v1.dat`，os_crypt/DPAPI 解密）与 Qoder CLI（`~/.qoder*/.auth/user`，AES-128-CBC）两类官方存储，看板两步确认导入，永不静默采用。
 - **模型清单完全跟官方走（双区不同、以官方此刻为准）**：三源优先级 —— 动态 `/algo/api/v2/model/list`（COSY 签名，**GET 需携带与签名一致的 `{}` body，否则 403**）> 本机官方客户端模型目录缓存（`~/.qoder*/.models/<uid>/catalog-v6`，QMC/HKDF+AES-256-GCM 解密）> 双区官方快照文件（`qoder_catalog_intl.json`/`qoder_catalog_cn.json`，`python _refresh_catalog.py` 一键随客户端更新）；清单**以动态源返回的集合为准**（官方桌面版此刻显示什么这里就显示什么，如国际版动态 15 条就不多塞静态独有的 `smodel/cmodel`）。**逐字段忠实保留**：`id` = **官方模型名**（如 `Qwen3.8-Max`，客户端唯一需要填的值；`upstream_key`/`aliases` 同时给出 key、`key (Name)` 与人类别名等全部可填形式）、官方桌面版介绍文案（`description`，取自客户端 dynamic-text）、本地化名（`name_local`，如 Ultimate→极致）、`context_config` 多窗口（200K 默认/400K/1M）、`thinking_config` 思考档位（low/medium/high/xhigh/max + 默认标注 + 可关闭）、**峰谷价**（`price_factor_peak` 促销前倍率 → `price_factor_valley` 谷时倍率 + `off_peak` 时段窗口 22:00-08:00 与官方错峰文案）、`is_free/is_new`；官方 `enable=false` 条目不过滤，附**官方原文禁用原因**（`disabled_reason = "需要升级或购买千问官方套餐开放"`，并透传上游 `disabled_message_key`）。**最大输出**：官方 catalog 与动态接口原始响应均无此字段，故不再输出/展示任何编造值。
 - **双区域独立路由**：支持 🌐 国际版 (qoder.com / api1.qoder.sh，备用 api2/api3 自动故障切换) 与 🇨🇳 国内版 (qoder.com.cn / gateway.qoder.com.cn) 独立配置与管理，区域独占模型（如国内 `q37fmodel`/`glm-5.2`、国际 `smodel`/`ultimate`）自动路由到归属出口并拦截错配 Key，看板一键切换且状态落盘持久化。
@@ -51,7 +51,7 @@
 ## 一、快速启动
 
 ### 1. 本机单机使用
-双击运行 **`start-qoder-proxy.bat`**，保持窗口运行：
+双击运行 **`start-qoder-proxy.bat`**（Windows）或 `./start-qoder-proxy.sh`（Linux / macOS），保持窗口运行：
 - **API 接口地址**：`http://127.0.0.1:8790/v1`
 - **Web 监控看板**：`http://127.0.0.1:8790/`
 
@@ -60,10 +60,12 @@
 > python _diag_gateway.py --chat   # 端口 → /health → /v1/models → 真实流式，逐项报出断在哪
 > python _diag_campaign.py         # 签到/活动链路体检（含本机虚拟化状态，中文输出）
 > ```
-> - **生命周期就是那个 cmd 窗口**（刻意的设计）：窗口开着网关就活着，**关掉窗口网关即停**，不会有后台残留进程；下次要用重新双击 `start-qoder-proxy.bat` 即可。
-> - 判别口诀：日志时间戳停在某一刻、此后再无 `POST /v1/chat/completions` = 网关已停；重新双击启动脚本即可恢复。
+> - **生命周期就是那个窗口**（刻意的设计）：窗口开着网关就活着，**关掉窗口（或 Ctrl+C）网关即停**，不会有后台残留进程；下次要用重新运行启动脚本即可。
+> - 判别口诀：日志时间戳停在某一刻、此后再无 `POST /v1/chat/completions` = 网关已停；重新运行启动脚本即可恢复。
 
-> ℹ️ 默认端口 **8790**（8788 被 `mimo-api-proxy.mjs` 占用，8789 为 wb-proxy 默认）。改端口：`start-qoder-proxy.bat 8791`。
+> ℹ️ 默认端口 **8790**（8788 被 `mimo-api-proxy.mjs` 占用，8789 为 wb-proxy 默认）。改端口：`start-qoder-proxy.bat 8791` / `./start-qoder-proxy.sh 8791`。
+
+> 🐧 **Linux / macOS**：三个启动脚本与 `.bat` 一一对应 —— `start-qoder-proxy.sh`（本机）、`start-qoder-proxy-lan.sh`（局域网）、`allow-firewall.sh`（放行防火墙，需 `sudo`）。首次使用先 `chmod +x *.sh`。脚本自动探测 `python3` / 便携运行时（要求 Python 3.9+），退出码透传；`allow-firewall.sh` 会自动识别 ufw / firewalld / nftables / iptables，WSL2 下还会打印 Windows 侧所需的防火墙与 `netsh portproxy` 步骤。
 
 首次启动若无账号，直接打开看板点击 **「+ 添加账号 (OAuth)」**，在浏览器完成设备授权即可自动加入；或点 **「🔑 导入 PAT」** 粘贴个人访问令牌。
 
@@ -78,12 +80,12 @@
 > 首次登录后请立即到「设置」修改默认密码。
 
 ### 3. 局域网共享模式
-双击运行 **`start-qoder-proxy-lan.bat`**，允许局域网内其他设备访问：
+运行 **`start-qoder-proxy-lan.bat`**（Windows）或 `./start-qoder-proxy-lan.sh`（Linux / macOS），允许局域网内其他设备访问：
 - **Base URL**：`http://<本机局域网IP>:8790/v1`
 - **密钥随机生成并持久化**：LAN 模式首次启动生成高强度随机 API Key（`qd-` 前缀），保存到 `accounts/settings.json` 并在终端打印，重启复用。
-- **自定义 Key**：`start-qoder-proxy-lan.bat 8790 我的Key`
+- **自定义 Key**：`start-qoder-proxy-lan.bat 8790 我的Key` / `./start-qoder-proxy-lan.sh 8790 我的Key`
 - 支持带密钥直达面板：`http://<IP>:8790/?key=生成的Key`。
-- 其他设备连不上时，管理员运行一次 `allow-firewall.bat` 放行防火墙。
+- 其他设备连不上时放行防火墙：Windows 管理员运行一次 `allow-firewall.bat`；Linux 运行 `sudo ./allow-firewall.sh`（自动识别 ufw / firewalld / nftables / iptables；WSL2 另需 Windows 侧规则与 `netsh portproxy`，脚本会打印具体命令）。
 
 ### 4. 多 API Key 管理与出口绑定
 
@@ -123,6 +125,14 @@ docker compose up -d --build
 docker run -d --name qoder-proxy --restart unless-stopped \
   -p 8790:8790 -v $(pwd)/accounts:/app/accounts -v $(pwd)/usage:/app/usage \
   -e API_KEY=your_secret_key ghcr.io/shuishuipingan/qoder2api-hub:latest
+```
+
+> **镜像与版本入口**：[**GHCR 包页面**](https://github.com/shuishuipingan/qoder2api-hub/pkgs/container/qoder2api-hub)（列出全部可用 tag、架构与拉取命令）· [**Releases**](https://github.com/shuishuipingan/qoder2api-hub/releases)（每个版本的变更说明）。
+>
+> 可用 tag：**`latest`** · **`1.3`**（跟随最新 1.3.x）· **具体版本**（如 `1.3.3`）· **`sha-<短提交>`**（钉死某次构建）。镜像为 **linux/amd64 + linux/arm64** 双架构。
+>
+> 提示：GitHub 仓库**首页侧栏**未必列出容器包 —— 用上面那个包页面链接即可，或直接 `docker pull ghcr.io/shuishuipingan/qoder2api-hub:latest`。
+
 ```
 
 - **持久化目录**：`./accounts`（账号凭证及出口设置）与 `./usage`（请求流水与指标快照）；
@@ -184,6 +194,17 @@ docker run -d --name qoder-proxy --restart unless-stopped \
 - **流式响应使用 HTTP/1.1 `Transfer-Encoding: chunked`** 并以 `0\r\n\r\n` 正确收尾，**不再发 `Connection: close`**：同一个 keep-alive 连接可连续复用（实测同连接连发 5 次流式全部成功）。此前裸写字节 + `close` 会让连接池型客户端复用已半关闭的连接，表现为反复重连。
 - **SSE 心跳保活**：上游首字延迟实测可达 **40–71 秒**（`xhigh` + 2–3 万 token 长上下文），等待期间网关每 5 秒发送一个 SSE 注释帧 `: ping`（客户端规范要求忽略），避免客户端/中间代理空闲超时断连重连。可用环境变量 `QD_SSE_HEARTBEAT` 调整间隔（秒，`0` 关闭）。
 - **探活端点**：`GET /ping`（以及 `/healthz`、`/livez`、`/readyz`）返回纯文本 `pong`，**不需要面板密码或 API Key、不查账号池**——供客户端/脚本判活用；此前返回 404 会被判成网关不可用而反复重连。完整状态仍看 `GET /health`。
+
+- **出口代理（零代码）**：网关用标准库发请求，代理由**环境变量**决定——HTTPS_PROXY / HTTP_PROXY / ALL_PROXY（任一设置即生效），**没设则直连**（不继承 Windows 系统注册表代理，原因见下条）；**需要换出口（例如国际版走代理）时，设置环境变量就行，不必改配置**；容器里用 -e HTTPS_PROXY=... 传入。
+  - **Windows 系统代理与「首次请求固化」（#27 修复）**：Python 的 urllib 在 Windows 上会**连带读 WinINET 注册表**里的系统代理（不只是环境变量），且默认 opener 会在**进程首次请求时把当时的代理配置固化**——如果网关启动时你的代理工具开着（如 Clash，127.0.0.1:7897）、之后又关掉它，长驻进程会一直去连那个已无人监听的端口（WinError 10061），token 刷新与全部模型调用全挂，直到重启网关。**本仓现行策略**：出站统一走自建 opener（_opener_for_request），**代理只看环境变量、忽略注册表，且每请求现读**（无固化——开关代理对下一次请求立即生效）。
+  - **受影响的人怎么办**：如果你平时**靠系统代理才能上网**（且从没设过代理环境变量）——升级后需要显式设置一次：Windows 执行 setx HTTPS_PROXY http://127.0.0.1:7897（端口换成你自己的代理工具），然后重启网关；只想本地直连的**无需任何操作**。**TUN / fake-ip 型代理**（Clash 等）在网络层透明转发，**无需任何设置**、行为不变。
+  - 若你用的是 **fake-ip 模式的透明代理**（Clash 等），网关已内置 `_FAKEIP_NETS` 把 fake-ip 网段视为有效，**不会**因为 DNS 把域名解析成内网地址而拒绝请求。
+  - 说明：我们**没有**做「按账号绑定不同出口」那套（每账号独立代理槽 + 出口情报）—— 因为账号都由你本机导入、出口天然相同，实测也没有「上游按 IP 风控」的信号。**将来若真撞上按 IP 风控**，最小方案是给账号加一个可选 `proxy` 字段并让出站走 `ProxyHandler`（约 25 行）。
+
+- **积分汇总（只读，给下游轮询用）**：`GET /credits/summary` —— 走 **API-key 级鉴权**（`_key_ok`：API Key 或面板会话均可，未设 Key 时放行），**只返回本地已登记的 `credits`，绝不触发任何上游查询**（对照 `GET /accounts/credits`：那个会**逐号强制刷新**，适合作者手动点、不适合机器轮询）。
+  - 返回：`{ by_realm: {cn, intl}, totals: {remain, accounts}, accounts: [{uid, nickname, realm, credits_remain, credits_used, credits_size, registered_at}], note }`；
+  - **新鲜度**：数据来自签到链路写入的权威值与每次消耗的回写，所以它反映的是「**上次登记时的值**」，不是实时余额（字段名与 `note` 字段都在明示这一点）；
+  - 未登记过积分的账号（新号还没跑过）会**照常列出**，但 `credits_*` 与 `registered_at` 为 `null`、且不计入汇总；空池 / 无账号时返回空结构而非报错。
 
 **DeepSeek-Flash 偶发失败修复（issue #2）**：这族模型的多轮一致性与 `reasoning_content` 绑定，而旧实现有两处断点，导致"偶发失败、重试有时能过"：
 
@@ -353,6 +374,35 @@ personalToken: pt- (长期兜底, 看板导入)
 
 ---
 
+## 三·五、智能体一键配置
+
+看板「智能体配置」页可检测本机已装的 AI 客户端，一键把它们的配置指向本网关：**改前自动备份、byte-exact 还原、多文件两阶段写入**（任一失败整体回滚）。纯标准库的文本级 YAML / TOML / JSON 编辑器，只增量插入或更新 `qoder-proxy` 那一段，绝不重排或抹掉你的注释、缩进与其它 provider 配置。
+
+| 客户端 | 写入位置 | 协议 |
+| --- | --- | --- |
+| Claude Code | `~/.claude/settings.json` | 原生 Anthropic Messages（自动剥 `/v1`） |
+| Codex CLI | `~/.codex/config.toml`、`~/.codex/auth.json` | Responses API |
+| OpenCode | `~/.config/opencode/opencode.json` | OpenAI 兼容（`@ai-sdk/openai-compatible`） |
+| DSH (DeepSeek Harness) | `~/.dsh/settings.yaml`、`~/.dsh/.credentials.yaml` | OpenAI 兼容 |
+| Crush (Charm) | `~/.config/crush/crush.json` | OpenAI 兼容 |
+
+- **模型表自动预填**：写入时顺带从网关拉取 `/v1/models`（含上下文窗口），也验证 Key（401 = Key 被拒）；
+- **可回滚**：备份存 `accounts/agent-backups/<客户端>/`（每文件保留最新 10 份），「还原」byte-exact 回到接入前，网关新建的文件会被清理；
+- **密钥安全**：API Key 只写进客户端自己的本地配置；网关侧 state 只存 sha256 指纹，不存明文；
+- **写配置是 loopback-only**：一键配置改的是**网关所在机器**的文件——远程访问、容器部署下入口按设计隐藏。
+
+**客户端装在别的机器（网关跑在服务器 / NAS）**：用自带的配置器 CLI，它在客户端所在机器上运行、只通过 HTTP 从网关取模型表：
+
+```bash
+# 1. 取配置器（免面板鉴权的公开只读端点）
+curl -fsSL http://<网关地址>:8790/agents/cli -o qoder_agents.py
+
+# 2. 一条命令接入（Python 3.9+；Key 在「设置」页生成）
+python qoder_agents.py list                                        # 本机装了哪些客户端
+python qoder_agents.py apply --client dsh --base-url http://<网关>:8790 --key sk-xxxx
+python qoder_agents.py restore --client dsh                        # 随时 byte-exact 还原
+```
+
 ## 四、客户端配置与接入
 
 ### OpenAI 兼容客户端 (Chatbox / NextChat / Cherry Studio / Kelivo 等)
@@ -381,9 +431,15 @@ custom freeform 工具（`apply_patch`）自动降级为 function 工具出站�
 | POST | /v1/chat/completions | 标准 Chat Completions 接口 |
 | POST | /v1/responses | Responses API 协议接口 |
 | GET | /v1/models | 模型列表（动态拉取 + 静态兜底，含能力与规格宣告） |
+| GET | /credits/summary | **API-key 级**鉴权的只读积分汇总（**只回本地登记值、不触发任何上游查询**）——给下游集成轮询用，见下方说明 |
 | GET | /tasks | 签到状态、连续天数、福利包资格与额度快照 |
 | POST | /tasks/run | 触发批量每日签到与领奖 |
 | POST | /tasks/travel | 批量领取 Pro 福利包 |
+| GET | /agents | 本机客户端探测与接入状态（需面板会话） |
+| GET | /agents/models | 网关模型清单（智能体配置页预填用） |
+| GET | /agents/cli | 配置器 CLI 源码（公开只读，远程机器直接 curl 取用） |
+| POST | /agents/apply | 一键写入客户端配置并备份原件（面板会话 + loopback） |
+| POST | /agents/restore | 一键还原客户端至接入前（byte-exact） |
 | GET | /scheduler | 定时调度器运行状态与排程日志 |
 | POST | /scheduler/trigger | 手动立即执行后台巡检保活 |
 | POST | /accounts/login/start | 发起 OAuth 设备授权 |
@@ -404,6 +460,13 @@ custom freeform 工具（`apply_patch`）自动降级为 function 工具出站�
 # 本机凭证扫描、账号级 IP 代理（URL 解析/脱敏/CONNECT+SOCKS5 握手字节序/
 # 零直连出口/fail-closed/熔断/导入导出携带））
 python _test_qoder.py
+
+# 全量套件（29 个：Python + 前端 JS；--jobs 限并发，--logs 把每套件完整
+# 日志落在可见目录而不是临时目录，CI 与本地同一条命令）
+python tests/run_all.py --jobs 4 --logs suite-logs
+
+# 测试跑完后确认套件没把 checkout 弄脏（CI 的第二道门）
+python scripts/check_clean_checkout.py
 
 # 直接启动
 python qoder_proxy.py --port 8790
@@ -437,17 +500,690 @@ python _verify_models.py --base http://127.0.0.1:8790
 | `qoder_scheduler.py` | 整点排程调度器（09/21 签到 · 22:00 保活，签到能力运行时探测） |
 | `qoder_settings.py` | 面板密码 (PBKDF2)、多 API Key 出口绑定、会话管理 |
 | `qoder_net.py` | 账号级 IP 代理：代理 URL 解析/脱敏 + 纯标准库 HTTP CONNECT / SOCKS5 隧道 + 零直连出口的 urllib opener |
+| `qoder_agents.py` | 智能体一键配置：本机客户端探测、YAML/TOML/JSON 文本级增量编辑、备份与 byte-exact 还原、独立 CLI |
 | `qoder_fingerprint.py` | UID 稳定设备指纹派生 (derive_id) |
 | `baseprompt.json` | 官方推理请求体模板 |
 | `dashboard.html` | 单文件 Web 看板（本地凭证两步扫描导入 + PAT 导入 + 签到中心的**本机虚拟化检测**卡片） |
 | `_diag_campaign.py` | 签到/活动链路体检（含本机虚拟化状态，中文输出） |
 | `_install_umid.py` | 从官方 npm 包 `@qoder-ai/qodercli` 提取内嵌的原生 UMID 组件（Linux/macOS 拿真机器身份；**机器级身份，解决不了同机多账号**） |
+| `start-qoder-proxy.sh` / `start-qoder-proxy-lan.sh` | Linux / macOS 启动脚本，分别对应 Windows 的 `start-qoder-proxy.bat` / `start-qoder-proxy-lan.bat`（探测 Python 3.9+ 运行时候选，`exec` 启动使进程生命周期 = 终端生命周期） |
+| `allow-firewall.sh` | Linux / macOS 放行防火墙，对应 `allow-firewall.bat`（自动识别 ufw / firewalld / nftables / iptables；WSL2 打印 Windows 侧规则与 portproxy 命令） |
 
 ---
 
 ## 七、版本与更新日志 (Changelog)
 
 完整说明见 [Releases](https://github.com/shuishuipingan/qoder2api-hub/releases)。
+
+### 企业 / 团队订阅「自己工作用」（issue #56）
+
+团队账号与个人号在网关里没有区别——额度走的是组织共享池（`orgResourcePackage`，
+面板会显示为「共享额度」）。但**风控与审计**的判定对象是账号，不是网关，所以这里
+有一层可选的「自用保护」，目标是把**能被客户端行为避免的风险**先避掉：
+
+| 风险 | 网关能做的 | 开关（默认） |
+|---|---|---|
+| 单席位被并发打爆 → 10605 排队 | 每账号并发闸门（超出排队，不并发打上游） | `QD_TEAM_MAX_CONCURRENCY=1` |
+| 机器枪式请求节奏 | 请求启动间加最小间隔 + 抖动 | `QD_TEAM_MIN_GAP_MS=400` |
+| 被多人共用 → 组织审计可见 | 统计同一账号的客户端 IP 数，超阈值打 WARN | `QD_TEAM_MAX_CLIENTS=3` |
+| 排队被当成失败 | 排队时按 `retryAfterSeconds` 等待重试（#38/#51） | 内置 |
+
+- 只对**识别为团队/企业**的账号生效（`userType` 含 teams/enterprise，或额度快照里有共享池）；
+- `QD_TEAM_GUARD=auto|on|off`：auto（默认）只对团队号启用，on 强制全部启用，off 关闭；
+- 拿不到租约时**不会卡死**：等 `QD_TEAM_WAIT_SECS`（默认 30s）后 fail-open 并记一条 WARN。
+
+**网关不能替你避免的**（属于使用方式/合约层面，自己判断）：
+
+- 组织后台的用量与成员审计（你的调用会记在你名下）；
+- 席位被回收、token 被重置（反代立即失效）；
+- 把公司席位共享给组织外的人（额度、审计、条款三条都会踩线）；
+- 数据中心出口访问**国际版**容易被风控（见 #57 的容器告警）。
+
+### v1.5.11
+
+**🐛 问题修复（#60 后续：zcode 工具调用仍截断/漏成正文）**
+
+- **`dfmodel` 没进结构化白名单**：DeepSeek 的上游 key 是 **`dfmodel`**（显示名 DeepSeek-V4-Flash），
+  白名单只写 `deepseek` 匹配不到 → auto 一直是文本化，模型照抄伪协议复述。现已加入，
+  这类会话直接走结构化直传，**从源头不再产生可复述的伪格式**。
+- **marker 括号变体**：新增 `[<assistant 请求调用工具]`、缺尾括号、多括号等形态的统一识别
+  （一条正则 + 前缀判定），不再「换一种括号就漏一次」。
+- **散文与 marker 落在同一个大块**：此前整块以散文开头会被判「不是回声」直接透传；
+  现在先把散文前缀放行、只保留 marker 起的部分继续判候选。
+- **逐字节守恒**：归一化只规范化**已存在**的括号，不再给缺失尾括号的片段补字符
+  （修掉跨帧拼接多一个 `]` 的回归）。
+
+**验证**：新增 `tests/_test_issue60_followup.py`（17 条，覆盖 1/8/64/整段分帧、
+散文同帧、双括号守恒、未声明工具名不恢复）；全量 **44 suites / 1498 checks / 0 failed**。
+
+### v1.5.10
+
+**✨ 新增功能**
+
+- **流量守卫（对所有账号生效）**：`QD_TRAFFIC_GUARD=on` 把 #56 的团队闸门扩展到全部账号——
+  单号并发默认 **1**、最小间隔 **400ms**，避免「自己把号打到并发过高」触发限流；
+  可调 `QD_TEAM_MAX_CONCURRENCY` / `QD_TEAM_MIN_GAP_MS` / `QD_TEAM_WAIT_SECS`。
+- **风控遥测**：`GET /health` 新增 `risk` 字段（`queue / rate / rejected / version_gate` + 最近一次信号），
+  `scripts/risk_diag.py` 只读诊断账号健康、生效旋钮、容器+intl 告警与日志信号。
+
+**🐛 问题修复**
+
+- **intl 出口顺序对齐官方**（逆向 intl 客户端 endpoint 缓存）：推理主 `api3.qoder.sh`，备 `api2` / `api1`；
+  旧配置以 api1 为主，而官方 0.4.8 候选首位早已是 api3（本机实测 api1 常年超时）。`QD_INTL_GATEWAY` 可覆盖。
+- **推理头补齐官方形态**：sse 请求新增 `cosy-machineos` 与 `cosy-machinehostname`（后者官方仅 infer-sse 携带，
+  按账号稳定派生、跨账号不同）；`QD_COSY_OS_HEADERS=0` 可关。
+- **排队不再换号**：10605 是模型级队列，换号不会变快；现在排队时**不解绑会话亲和**，
+  避免「同一会话在多账号间跳」的异常画像。
+- **430 版本门可读化**：返回「客户端/网关版本过低，请升级」，不再被误判成风控或账号问题。
+
+**📚 文档**
+
+- `docs/risk-control-and-queueing.md`：风控维度、处置等级、多账号为何排队、官方客户端逆向结论
+  （排队轮询协议 `/api/v2/service/ask/queue/status`、60 分钟默认等待、UMID 设备身份、错误码表）、intl/cn 差异。
+- `docs/risk-control-playbook.md`：分层处方（出口 > 身份 > 调度 > 请求 > 观测 > 应急）、
+  容器/数据中心三种落地方案、**只做软件层时能控什么**、P0/P1/P2 路线与验收指标。
+
+**验证**：全量 **43 suites / 1478 checks / 0 failed**。
+
+### v1.5.9
+
+**🐛 问题修复 / 防风控对齐（PR #61 by ddddd-ren）**
+
+三处出站身份形态与官方客户端对不上，都可被动聚类成「网关特征」：
+
+- **出站 UA**：此前是 `Go-http-client/2.0`（Go 语言 HTTP 客户端默认值），而 Qoder 官方客户端是 Electron/Node 应用——等于每个请求自报「我是脚本」。现在按区域取官方 UA（CN `QoderWork/1.1.64` / INTL `Qoder/1.1.64`），覆盖 `headers()`、token 刷新、设备授权取 userinfo、PAT 导入的 jobToken 交换。
+- **请求 ID**：`X-Request-ID` 此前是「uid 派生的固定前缀 + 微秒」，那个前缀是**每个请求都在的稳定标记**。现在改为每请求纯随机 32 位 hex。
+- **设备码形态**：`derive_id` 从「32 位无连字符 hex」改为 **UUIDv4 形状**（与官方 machineId 同形），派生来源（uid+salt 加盐哈希）不变、同账号恒定、跨账号隔离。
+
+**⚠️ 存量号池注意**：设备码形态变化意味着上游会把每个已入池账号看成「换了一台设备」。想避免这次换设备，升级前设置 `QD_DEVICE_ID_LEGACY=1`（保持旧 32 位 hex 形态；该开关只影响格式，不影响派生来源）。新号池不需要。
+
+**验证**：全量 **42 suites / 1460+ checks / 0 failed**（PR 自带 17 条 + 本地补 5 条形态/开关断言）。
+
+### v1.5.8
+
+**🐛 问题修复**
+
+- **Codex / MCP 的 `namespace` 工具导致上游 400**（#63）：Codex 会在 `/v1/responses` 的工具列表里发 `type: "namespace"`（MCP / multi-agent）与 `web_search` 这类 Responses 专有类型。网关原样透传给 Qoder，上游反序列化阶段直接报 `unknown variant \`namespace\`, expected \`function\`` → 整个回合失败（稳定复现，不是网络抖动）。
+  现在两处都做过滤：`_tools_for_chat()`（Responses→Chat 转换）与 `normalize_tools()`（Chat 请求规范化）只保留 `function` 与已降级的 `custom`，其余类型丢弃并记一条**按类型节流**的 WARN（同类每 10 分钟一条）。`function` 工具与 custom 降级逻辑完全不变。
+  注：namespace/MCP 工具本身**仍不会被调用**——上游无法表达它们。要完整支持需要 namespace 拍平 + 响应端还原，属于后续特性。
+
+**验证**：全量 **42 suites / 1442 checks / 0 failed**（`_test_issue56_62.py` 扩到 31 条，覆盖工具过滤与告警）。
+
+### v1.5.7
+
+**🐛 问题修复**
+
+- **Anthropic 入口丢弃 Claude Code 的 adaptive 思考档位**（#62）：Claude Code 对**第三方模型名**发的是 `thinking={"type":"adaptive"}` + `output_config={"effort":"low|medium|high|max"}`。adaptive 是合法 dict 但没有 `effort`/`budget_tokens`，旧实现因此**整段跳过 `output_config` 分支** → 四档全部映射成 `None` → 上游按默认档（多数模型是 `max`）跑。用户选 low/high 都白选，而且因为默认是 max，表现为「更费 token / 更慢」但**不报错**。
+  现在 `thinking` 里取不到档位时回退读 `output_config.effort`；`disabled` 仍然尊重。
+- **`budget_tokens` 够不到 max**：断点表原来最高只到 `high`（>16384 一律 high），补一档 `<=32768 high / 更大 max`。
+
+**✨ 新增功能**
+
+- **团队/企业账号「自用保护」**（#56）：只对识别为团队号的账号生效（`userType` 含 teams/enterprise，或额度快照里有共享池），把**能由客户端行为避免**的风控点先避掉：
+  - 每账号**并发闸门**（`QD_TEAM_MAX_CONCURRENCY`，默认 1）：超出排队而不是并发打上游，避免撞 10605/RESOURCE_LIMIT；
+  - 请求启动间**最小间隔 + 抖动**（`QD_TEAM_MIN_GAP_MS`，默认 400ms），避免固定频率特征；
+  - **客户端 IP 统计**（`QD_TEAM_MAX_CLIENTS`，默认 3）：同一账号被多个 IP 使用时打 WARN，提醒可能被共用（组织审计最先看到的就是这个）；
+  - `QD_TEAM_GUARD=auto|on|off`（默认 auto）；拿不到租约时等 `QD_TEAM_WAIT_SECS`（30s）后 fail-open，不会卡死。
+  - README 新增「企业/团队订阅自己工作用」一节，列清**网关能避免**与**不能避免**的边界（组织审计、席位回收、共享给组织外、国际版数据中心出口）。
+
+**验证**：全量 **42 suites / 1436 checks / 0 failed**（新增 `_test_issue56_62.py` 25 条）。
+
+### v1.5.7
+
+**📚 文档**
+
+- 新增 **`docs/risk-control-and-queueing.md`**：Qoder 国际版风控与排队的完整观察笔记——
+  上游看到的维度（客户端指纹 / 设备身份 / 账号 / 网络 / 行为）、处置等级（10605 排队、403、429、
+  418、内容审核）、多账号为什么仍会排队、分层缓解办法与反模式。
+- 含对**官方桌面端**（`qoderclicn.exe` / `app.asar`）的只读逆向结论：
+  - 排队走**独立轮询协议** `GET /api/v2/service/ask/queue/status?requestSetId&modelKey&queueType`，
+    每轮 sleep `retryAfterSeconds`，`isQueued=false` 才继续，`serviceAvailable=false` 继续轮询，
+    连续 3 次失败判致命，**总等待默认 60 分钟**（`QODER_MODEL_QUEUE_MAX_WAIT_MS`）；
+  - 官方推理头为 `Cosy-Version / Cosy-ClientType / Cosy-MachineOS / Cosy-MachineHostname`（仅 infer-sse）；
+  - 设备身份由原生 SDK 计算（`resources/umid/sgsdk.dll` + `runtime-info.exe`，函数名含 `NATIVE_RISK_IDENTITY`）；
+  - 客户端专门渲染的错误码：`10605 / 114 / 430 / 100401 / 100403 / 80411 …`。
+
+**⚙️ 行为调整（排队预算对齐官方）**
+
+- 网关排队等待从「3 轮 × 30s ≈ 90s」提升到**分钟级**：`QD_QUEUE_MAX_ROUNDS` 默认 **6**、
+  `QD_QUEUE_WAIT_BUDGET_SECS` 默认 **600**（10 分钟），单轮仍受 `QD_QUEUE_WAIT_MAX_SECS`（180s）约束；
+- 每次等待加 **0~2s 抖动**（`QD_QUEUE_WAIT_JITTER`），避免多客户端同时唤醒一起打同一队列。
+
+**验证**：全量 **42 suites / 1443 checks / 0 failed**。
+
+### v1.5.6
+
+**🐛 问题修复**
+
+- **多模态请求出站体积膨胀 3 倍，撞 30MB 限制后被 RST**（#59）：`build_qoder_body` 在 `messages` 的结构化 parts 之外，又把整份 Base64 **重复塞了两处**（`body.image_urls` + `chat_context.imageUrls`）。上游只读 parts，这两份纯冗余——10 张图 15MB 会变成 48MB、编码后约 64MB，超过阿里云 SLB 的 30MB 硬限制被强断（Broken pipe），而 Broken pipe 又被当成瞬态故障反复重试，最终把整个账号池打到熔断。现在默认不再填这两处（`QD_KEEP_TOPLEVEL_IMAGES=1` 可恢复旧行为）。
+- **出站体积前置保护**：编码后若超过 `QD_MAX_BODY_MB`（默认 29MB）**就地返回 HTTP 413**，不发网络请求、不轮询账号、不写冷却——不会再因为一个超大包拖垮整个号池。
+- **zcode 工具调用漏成正文**（#60）：模型把内层 `arguments` 的引号**未转义**地写出来时，外层数组也不是合法 JSON，此前四条回读路径全拒 → 整段协议当正文下发。现在增加「抢救式解析」（补齐内层引号转义后按同一套严格校验重建），并在流式 hold 阶段对「数组中途的 delimiter 错误」保持候选，不再中途证伪。实测截图原文在 8/64/整段分帧下都能恢复为 `tool_calls`。
+
+**✨ 新增功能**
+
+- **模型清单磁盘缓存 + 手动刷新**（#58）：动态发现成功的清单会落盘（7 天有效），容器重启或上游抖动时先用上次结果，不再回退到陈旧的内置快照；新增 `GET /models/refresh`（面板鉴权）可强制重新发现。
+
+**⚠️ 提示**
+
+- **不要在容器里反代国际版**（#57）：数据中心出口访问 intl 网关容易被风控（表现为聊天排队）。检测到「容器 + intl 账号」时启动日志会给 WARN 提示；建议用住宅出口或改用国内版。
+
+**验证**：全量 **41 suites / 1411 checks / 0 failed**（新增 `_test_issue57_60.py` 19 条）。
+
+### v1.5.5
+
+**🐛 问题修复**
+
+- **Anthropic 入口把动态 system 抬进缓存前缀，命中率 92% → 14.7%**（#55）：`system_prompt_of` 会把 `messages` 里的 system 合并进最前面的 system，而客户端（Claude Desktop/Code）恰恰把**每轮都变**的内容放在那里（当前时间、工具清单、skills、context 用量）。合并后前缀逐轮不同，上游缓存从第 0 字节就失配。
+  现在默认 **inline**：`messages` 内 system **就地降级成一条 user**（内容不丢、位置不变），顶层 system 保持字节稳定；旧行为保留为 `QD_ANTHROPIC_MSG_SYSTEM=merge`，另有 `drop`。
+- **指纹看不出来源**（#55）：`usage.jsonl` 新增 `sys_src`（`top` / `top+inline` / `top+msg` / `none`）与 `n_msg_system`，下次这类问题不必翻代码。
+- **智能体一键配置根本发不出请求**（#53，PR #54 by WCX0221）：`/settings` 只回掩码、从不回明文 `key`，而下拉用 `k.key` 做 option value → 所有 option 值都是空串 → 点「一键配置」只弹「请先选择 API Key」。现在 option value 用 key **id**，点击时经 `/settings/reveal?id=` 取一次明文（与设置页复制 Key 同一路径）。
+
+**⚙️ 行为变更**
+
+- **DeepSeek 进入结构化工具历史白名单**（#49 后续）：报告者在真实长会话（Anthropic 入口、1,283 次工具调用）验证 **0 降级**，同环境开启前基线 0.30%。结构化直传后模型看不到 `LEAK_MARKER` 文本格式，从根上消除复述。`_tool_ids_ok` 守卫仍在（id 不齐备自动回退文本化），INTL 仍不在 auto 范围。
+
+**验证**：全量 **40 suites / 1392 checks / 0 failed**（新增 `_test_issue55_system_prefix.py` 17 条 + PR 自带 `_test_agents_panel.js` 20 条）。
+
+### v1.5.4
+
+**🐛 问题修复**
+
+- **信封层排队（10605 / RESOURCE_LIMIT）没有等待**（#51 后续）：上游会先以 HTTP 200 建流、再在 SSE 信封里投递 `403 {isQueued:true, retryAfterSeconds:30, subCode:RESOURCE_LIMIT}`。v1.5.3 之前只在 **HTTP 层**做了排队等待，信封层仍按普通 403 冷却换号，换不到就把 403 直接丢给客户端（表现为 `request error: status=403 … 10605`）。
+  现在信封层同样识别排队：`should_retry_envelope` 对排队信号允许比瞬时重试更多轮（最多 `QUEUE_MAX_ROUNDS`），重开前按 `retryAfterSeconds+1` 等待；非流式聚合循环也留出了排队轮次；普通 403 的重试轮次**不变**。
+- **排队失败给可读文案**：10605 / RESOURCE_LIMIT 不再是一段嵌套 JSON，而是「上游排队中…已按 retryAfterSeconds 等待并重试，仍拿不到可用资源，请稍后重试」。
+
+**验证**：全量 **38 suites / 1353 checks / 0 failed**（新增 8 条：嵌套 detail 解析、信封排队识别、重试轮次、等待时长、普通 403 不变、已吐字节不重开、文案映射、聚合轮次）。
+
+### v1.5.3
+
+**🐛 问题修复**
+
+- **DeepSeek 原生 DSML 在 chat / Anthropic 流式里完全没有回读**（#51）：此前只有 Responses 路径有 DSML 解析，模型直接吐 `<|DSML|invoke name=...>` 时整段协议漏成正文（截图三例：闭标签+数组、完整 DSML 块、marker+杂字+数组）。现在流式出口新增一层 DSML 缓冲：遇到 DSML 就压住到流末统一解析，成功则补发散文 + `tool_calls` + `finish=tool_calls`；解析不出则原样透传并记 WARN。非流式 chat 侧也补了同样的回退。三种形态在 1/8/64/整段分帧下都能恢复、零泄漏。
+- **闭标签/杂字形态的解析容错**：允许 `</|DSML|...>` 前导闭标签、允许 marker 后跟杂字（如 `">`) 再进数组、允许数组开头的 `[` 丢失（取首个 `{` 到末个 `}` 重新成组）；严格校验（name 非空且命中声明、arguments 合法）一律保留。
+- **连接被拒绝只显示裸异常**（#52）：`<urlopen error [WinError 10061] ...>` 现在翻成可操作中文——点名目标地址、并给出三步排查（服务/端口、环境变量代理是否还在跑、地址是否写错）；10060 超时与 10054 重置同样处理。
+
+**✨ 新增功能**
+
+- **关掉窗口不再停服 + `stop-qoder-proxy.bat`**（#50）：`start-qoder-proxy.bat` 改为 `Start-Process` 分离启动（隐藏窗口、日志落 `qoder-proxy.log`），关掉启动窗口服务继续跑；新增 `stop-qoder-proxy.bat` 按 `qoder-proxy.pid` **精确停止**（先校验目标进程命令行含 `qoder_proxy.py`，绝不误杀其它 python）。服务端新增 `--pid-file`，启动写 PID、退出自动删除。
+
+**验证**：全量 **38 suites / 1345 checks / 0 failed**（新增 `tests/_test_issue50_51_52.py` 25 条）。
+
+### v1.5.2
+
+**🐛 问题修复**
+
+- **长会话工具调用复述：散文 + 双 marker + 数组 + DSML 尾**（#49）：模型在长会话里会连写两个 `LEAK_MARKER`、前面带散文、后面跟 DSML 闭标签，旧守卫要求「整段恰好是 marker + 数组」，于是四条路径全部拒绝、整段原样下发（`stop_reason=end_turn`，工具静默不执行，实测约 1.5%）。
+  现在解析取**最后一个** marker 起算、跳过连续重复 marker、剥掉尾部 DSML/围栏；前方散文作为 `clean` 保留**且不含 marker**。流式侧同步：`_leak_body_offset` 跳过重复 marker，并对「第二个 marker 还没打完」的跨帧半截保持候选（8 字符分帧也稳）。
+- **空壳循环不再完全静默**（#49 形态3）：`marker + <terminal></terminal>` ×54 这种**没有 JSON 参数**的形态无法恢复（参数根本不存在），保持 fail-open 透传；但四条路径全拒时会记一条 **WARN**（含 `markers=/dsml=/total=/suppressed=`，默认每分钟一条，避免刷屏），让发生率可观测，而不是只能靠查磁盘发现「模型说清理完成、其实没执行」。
+- **流式 tool_call.id 兜底的四条边界**（#47 复核）：
+  - `index` 为 list/dict/str 等**不可哈希值**时不再抛 `TypeError`（旧实现会让异常一路冒到 socket，客户端看到连接被掐断）；现在按帧内位置归一，并对整帧加了一层 fail-open 兜底；
+  - **并行调用都不带 index** 时不再撞同一个 id（按帧内位置区分）；
+  - **串行多个无 index 调用**（同一位置、各带 `function.name`）各得新 id，续帧沿用；
+  - 中途才收到上游真 id 时**覆盖收敛**（旧 `setdefault` 会让后续帧回落到旧补值）。
+
+**验证**：全量 **37 suites / 1321 checks / 0 failed**（新增 `tests/_test_issue47_49.py` 22 条：index 六种畸形值、并行/串行撞号、迟到的真 id、三种回声形态、流式 8/64/512 分帧、WARN 节流与严格边界回归）。
+
+### v1.5.1
+
+**⚠️ 行为变更（fail-closed，issue #37）**
+
+「工具协议回声 + 内层 arguments 非法」不再以「一句说明 + 普通 stop」结束，改为**协议级失败**：
+
+| 出口 | 行为 |
+|---|---|
+| `/v1/chat/completions` 流式 | `data: {"error": …}` → `[DONE]`；**不再发** stop/tool_calls 正常收尾 |
+| `/v1/chat/completions` 非流式 | **HTTP 502** + 标准错误信封 |
+| `/v1/responses` 流式 | `response.failed`；**不再发** `response.completed` |
+| `/v1/messages`（Anthropic） | `event: error`；**不再发** `message_stop` |
+
+动机：旧行为对按「错误帧 + 结束状态」驱动工具循环的客户端等价于**成功**（`stopReason=end_turn`、`hasFatalError=false`），工具没执行却把任务当完成。
+
+**🐛 问题修复**
+
+- **协议回声的围栏 / DSML 组合识别**（#37）：`_echo_with_bad_args` 此前只在「整串被围栏包住」时才剥围栏——流式里 `_find_marker_split` 先把开围栏切进散文，hold 只剩 `marker + 数组 + 闭围栏`，于是认不出、marker 原样吐给客户端。现在首尾围栏残余（含 `json` 标注）与 DSML 尾标签**交替剥两轮**再判定。
+- **判定顺序**（#37）：三处出口（流式收尾 / 非流式聚合 / Responses）原先 `_leaked_partial_droppable` 在前，会把「外层数组合法 + 内层参数坏 + DSML 尾」误判成 #9 截断回声**静默吞掉**并照常 stop。现在 fail-closed 判定**提前**，与 #9 互斥（后者要求外层数组解析失败）。
+- **小分块漏检**（#37）：`_json_array_prefix_ok` 的 Extra data 分支在 `tail = "```\n</"` 时既不是围栏前缀、又被 `_dsml_tail_holdable` 当成散文 → 候选在**流式中途**被证伪，1/16 字符每帧下整块当正文补发。现在 tail 以完整闭围栏开头时先剥掉再判。
+
+**🐛 其他修正**
+
+- 坏参数**不自动重试、不冷却账号**：`should_retry_envelope` 对该异常直接 False（避免重复计费），账号冷却/归因入口直接返回（模型内容问题不等于账号不可用）。
+- 错误详情是**固定串**（不含实际参数、路径、正文）；面向客户端的文案单独给出可读中文。
+
+**🐛 问题修复（#48 前缀缓存）**
+
+- **历史工具结果削减随请求形态滑动，导致上游前缀缓存每轮失效**：旧规则用 `_current_turn_start` 从末尾往前找最后一条 user 消息——连续工具调用时 `_cur_start=1`（全不削），用户一插话 `_cur_start` 跳到末尾（**每条**历史工具结果全部重削）。同一条历史消息在不同轮次序列化成不同字节，上游从第一条被削处起整段不命中（实测命中率 95-99% → 8%）。
+  现在默认 **`tail` 策略**：只保护**最后 1 条**工具结果，更早的一律削；一旦被削，字节里不再含随轮次变化的成分。`QD_TOOL_RESULT_SCOPE` 可选 `tail`（默认）/ `all`（全部削，缓存最稳）/ `turn`（旧行为，仅兼容）；`QD_TOOL_RESULT_KEEP_TAIL` 可调保护条数。
+- **省略标记去掉字数统计**：`[[qoder-proxy: 已省略 N 字符历史工具结果…]]` → 固定串 `[[qoder-proxy: 已省略中间内容…]]`。带数字的标记会让「同一条结果」在内容变化/重试时产生不同字节，同样打断前缀。
+
+**验证**：全量 **36 suites / 1298 checks / 0 failed**（新增 `tests/_test_prefix_stability.py` 12 条：两种请求形态字节一致、标记无数字、三种 scope、keep=0 回退）。
+
+
+**⚠️ 两个契约细节**（写在这里以免误判）
+
+- 混合批次要 fail-closed，数组里**每个** `name` 都必须在本次声明集合内；只要有一个未声明，整块仍走原有 fail-open（不把普通示例当错误）。
+- 「内层真实 LF」必须落在 JSON **字符串内部**（`{"body":"line1<LF>line2"}`）；落在 token 之间的换行是合法 JSON，属「合法参数」路径。
+
+**验证**：全量 **35 suites / 1285 checks / 0 failed**（新增 `tests/_test_issue37_fail_closed.py` 103 条）；另有 `tests/manual_issue37_e2e.py` 真起网关验证四组 HTTP 行为（200+error 帧 / 502 / response.failed / event:error）。
+
+### v1.5.0
+
+**✨ 新增功能**
+
+- **面板会话跨重启存活**（PR #46 / cliffcat）：token 改为自校验签名（`<过期>.<nonce>.<hmac>`），密钥持久化在 `accounts/settings.json`；网关重启/升级不再强制重新登录，改密码时换密钥一次性踢掉所有浏览器。顺带修了三处：`settings.json` 解析失败时**拒绝回写**（避免一次瞬时 IO 抹掉密码哈希与全部 API Key）、非 ASCII token 不再打断连接、`revoke_all()` 不再持锁做磁盘 IO。
+- **近 7 / 30 天 Token 用量图**（PR #46）：新端点 `/usage/daily?days=7|30&group=model|realm|key|account`，纯手写 DOM 堆叠柱状图（零第三方依赖）；日志倒读、内存 O(1)，脏行跳过，DST 时区按自然日重算。
+- **独立于护栏的余额刷新**（#43）：请求线程只给账号打标（不联网），后台默认每 **5 分钟**合并刷新「真正用过的号」，空闲不轮询，用完补完最后一次；失败保留旧快照并按 60s→15min 退避重试。`QD_CREDITS_USAGE_INTERVAL` 可调。
+
+**🐛 问题修复**
+
+- **流式 tool_call.id 为空导致下游会话整份报废**（#47）：上游偶发缺 id 的增量帧被原样透传，客户端落盘 `id:""` 后整份会话无法加载。现在在**唯一流式出口** `recover_leaked_tool_calls` 统一兜底：有 id 原样透传、缺 id 补 `call_` 并按 index 记忆（分帧不换号），非工具帧字节级不变。
+- **面板余额长时间不更新**（#43）：此前余额刷新绑在额度护栏上（阈值全 0 时线程根本不存在）。现在与护栏解耦；账号行显示「更新于 HH:MM / 待刷新 / 查询中 / 查询失败（显示旧快照）」，不再把旧快照伪装成刚更新。
+- **签到积分不显示**（#40 后续）：签到成功（含 `ALREADY_CLAIMED`）后**立刻刷新余额**，奖励积分即时反映到面板。
+- **国际版空额度一片空白**（#40 后续）：上游返回全 0 退化体时不再只留日志——写降级标记并在面板显示 **`0*` + 「空额度」**（悬停可见上游原因与时间），而不是「未查询」。
+- **深色模式 API Key 表单白底**（#44 / PR #45）：编辑卡片内联 `background:#ffffff` 改为 `var(--panel)`。
+
+**🎨 体验优化**（PR #46）：用量表「占比」分母改为表内可见行之和（不再最大行恒 100%）、TTFT/输入输出显式换行不再从数字中间折行、`.range-btn:hover` 蓝底深字修正；展示路径统一走 `effective_remain()`（团队账号共享额度不再显示 0）。
+
+**⚠️ 其他变更**：新增 2 个回归套件（`_test_stream_tool_ids.py` 12 条 / `_test_credits_refresh.py` 27 条），PR #46 自带 2 个（`_test_usage_daily.py` / `_test_panel_session_persist.py`）。
+
+**验证**：全量 **34 suites / 1180 checks / 0 failed**。
+
+### v1.4.5
+
+**🐛 问题修复**
+
+- **共享额度字段名对齐**（#39 后续，报告者 realhuhu 提供了真实团队账号响应）：v1.4.4 按猜测字段名透传，实际字段是 **`orgResourcePackage`**，且用 **`cap`**（不是 `total`）、带 `available` 开关。现在：
+  - 识别 `orgResourcePackage`（保留 `sharedQuota`/`teamQuota`/`poolQuota` 等兼容名），`size` 取 `cap`；
+  - 账号行显示「共享 N」，`packages` 多一行「共享额度」；
+  - **有效余额** `remain_effective` = 套餐 remain + 可用的共享 remain；`available=false` 时不计入；
+  - **预留护栏与 402 解封改用有效余额**——团队账号「套餐用满（0/3000）+ 共享池 952」不再被误判为余额耗尽而停号；
+  - `/credits/summary` 合计与面板区域卡片改用有效余额，行里同时保留原始 `remain` 便于核对。
+
+**⚠️ 其他变更**：回归套件新增 8 条团队账号断言（报告者的真实响应逐字段：`remain=952` / `size=cap=2500` / 有效余额 952 / 护栏不拦 / `available=false` 不计入 / 汇总用有效余额）。
+
+**验证**：全量 **30 suites / 1090 checks / 0 failed**。
+
+### v1.4.4
+
+**🐛 问题修复**
+
+- **Anthropic 流式用量缺输入侧字段**（#42，报告者 zengzongxiong）：`message_delta.usage` 此前只回 `output_tokens`，按新版 Anthropic 语义（累计完整用量）读取的客户端（Claude Code / AI SDK 系）输入 token 恒为 0。现在回全 `input_tokens` / `cache_read_input_tokens` / `cache_creation_input_tokens` / `output_tokens` / `output_tokens_details`，与非流式同口径（`input_tokens + cache_read == prompt_tokens`）。
+- **工具调用协议回声在内层参数非法时泄漏为正文**（#37，报告者 qingannn）：外层数组合法、内层 arguments 非法（未转义换行/引号、截断、尾部多余文本、非法转义）时，回读守卫拒绝恢复后整段协议被当正文放出并普通结束。现在识别这种形态为「协议回声 + 参数坏了」：**不泄漏协议、不伪造可执行调用**，改为一句明确的失败说明。散文/示例/未声明工具名不受影响。
+- **上游排队被当成错误丢给客户端**（#38）：403 + `isQueued`/`10605` + `retryAfterSeconds` 现在会在预算内**等待队列放行后重试**（默认最多 3 轮、单轮 ≤180s、总预算 300s，均可用 `QD_QUEUE_*` 环境变量调整），不再让客户端看到排队 JSON 就直接结束。
+- **国际版积分/签到 403**（#40）：403 时先用桌面端同款请求头重试一次；仍失败时给出可操作说明，并**自动探测「令牌属于另一区域」**（区域标记错误）——实测国际版 quota 接口本身可用、签到接口在 intl 不存在（404 已按「本区域无此接口」处理）；签到 403 也不再是裸错误，而是带原因的「上游拒绝访问」。
+- **改密码未先校验原密码**（#41）：原密码错现在返回 **403 +「当前密码不正确」**（此前 401 会触发前端弹回登录遮罩，用户只看到登录 UI 看不到原因）。
+- **共享额度不显示**（#39）：上游若返回共享额度池（`sharedQuota` / `teamQuota` / `poolQuota` / `sharedCredits`），现在纳入 `credits.packages`（「共享额度」行）并在账号行显示「共享 N」；不返回时不编造。套餐总额口径不变。
+
+**🎨 体验优化**：账号行在共享额度存在时显示「共享 N」徽标（悬停可见已用/总量）。
+
+**⚠️ 其他变更**：新增回归套件 `tests/_test_issues_1_4_4.py`（31 条断言，覆盖上述六个 issue 的判据）。
+
+**验证**：全量 **30 suites / 1082 checks / 0 failed**；新套件回退四个源文件后必红（#42 五条断言现场复现），恢复后全绿。
+
+### v1.4.3
+
+**🐛 问题修复**
+
+- **流式工具调用回声的三种新泄漏形态**（issue #36 后续，报告者 qingannn 二次报告并给出精确分片实验）：
+  - **尖括号标记变体**：上游同一转换器还会产出 `<assistant 请求调用工具>`（方括号换尖括号）——回读守卫只认方括号，整块直接透传。修复：入口归一化（含围栏内、真前缀跨帧判定），判定逻辑仍只有一套；
+  - **DSML 闭合标签跨帧**：帧边界落在标签内部（如 `</｜｜DSML｜｜ param`，无 `>`）时，尾部剥离剥不动、JSON 在 "Extra data" 处证伪 → 整段泄漏。报告者实测「16/128 字符分片失败、512 成功」正是此因。修复：尾巴判定统一为「剥掉完整标签后，剩余为空或以 `</` 进行中（含单字符 `<`）即暂留」，长度护栏 80 字符防散文误留；
+  - **帧数上限误伤**：`_HOLD_MAX_FRAMES=200` 对「每帧 1 字符」的合法回声块（201+ 帧）触发 fail-open。修复：帧上限只防**空转**（连续无增长帧），有增长的块交给 32KB 字符上限兜底。
+- **验证**：分片矩阵 2 种标记 × 5 种尺寸（1/4/16/64/512）全部恢复且零泄漏；报告者三个场景逐一复现转绿。
+
+**⚠️ 其他变更**
+
+- 测试：`_test_proxy_policy.py` P3（能红证据）在本机系统代理 bypass 含 loopback 时如实 SKIP（Windows `proxy_bypass` 读注册表 bypass 列表会让死代理对 loopback 不生效——环境不可测，SKIP ≠ PASS）；产品行为断言（P3b/P4/P5）不受影响。
+
+**验证**：全量 **29 suites / 1050 checks / 0 failed**；新增 18 条 #36b 回归断言（归一化 4 + 分片矩阵 10 + 尾巴判定 4）。
+
+### v1.4.2
+
+**🐛 问题修复**
+
+- **图像真正送达上游**（v1.4.1 修复不彻底）：实测发现 qoder 上游**不读**顶层 image_urls / chat_context.imageUrls——图像填进这两个字段后模型仍回「我没有收到图片」。改为带图消息的 content 保留结构化 image_url parts（与 workbuddy 网关同款形态），上游从此识别图像（200x200 纯红图实测模型答「红色」）；顶层 image_urls 仍照填（兼容无害）。三个入口（Chat / Responses / Anthropic）全部覆盖。
+- **DeepSeek-Flash 流式工具调用偶发变正文**（issue #36，报告者 qingannn）：上游把 DSML 工具调用转成「marker + JSON 数组」后偶尔在数组尾部漏出原始 DSML 闭合标签（</｜DSML｜parameter> / invoke / calls）——残片让流式暂存缓冲在 JSON 已完成处证伪，整段被当正文补发：工具不执行、内部协议文本泄漏给客户端。修复：尾部 DSML 闭合标签剥离（仅尾部，正文内部讨论 DSML 不受影响），流式暂存与整段解析双入口生效。修复前帧序列复现必红、修复后恢复为结构化 tool_calls（finish_reason=tool_calls）。
+
+**验证**：全量 **29 suites / 1032 checks / 0 failed**；真实链路实测（经网关 → qoder 上游）：文本基线正常、1x1 图模型确认收到（回答颜色）、200x200 纯红图模型答「红色」；#36 帧序列离线复现 + 能红证据（stash 回退必红）。
+
+### v1.4.1
+
+**🐛 问题修复**
+
+- **图像单 part dict 形态被字符串化**（issue #33 反馈的根因）：部分客户端把单个 content part 对象直接当 content 字段（而非列表）发送——chat / Responses 两条路径的 str() 兜底会把整个图像 dict 字符串化成 Python 字面量文本放进消息正文，模型收到的是一段 {'type': 'image_url', ...} 文本，**图像从未真正到达模型**；Anthropic 桥的单块 dict 形态则被压成空文本静默吞掉。三入口全部改为「dict 当单元素列表处理」：图像照常收集、绝不 str()。附 4 条回归断言（chat dict / Responses dict / anthropic 单块 / 非 dict 兜底不变）。
+
+**验证**：全量 **29 suites / 1028 checks / 0 failed**（较 1.4.0 净增 4 条图像形态回归断言）；三入口离线复现：list / dict / anthropic 单块三种形态均正确产出 image_urls。
+
+### v1.4.0
+
+**✨ 新增功能**
+
+**① 智能体一键配置** —— 看板新页签「智能体配置」，把本机 AI 客户端指向本网关：
+- 支持五个客户端：**Claude Code**（原生 /v1/messages）、**Codex CLI**（Responses）、**OpenCode**、**DSH (DeepSeek Harness)**、**Crush (Charm)**；本机自动探测（配置目录 or PATH）；
+- **非侵入写入**：纯标准库的文本级 YAML / TOML / JSON 编辑器，只增量插入 qoder-proxy 那一段，注释、缩进、其它 provider 配置逐字节保留；模型表自动从网关拉取预填（顺带验证 Key，401 = Key 被拒）；
+- **byte-exact 还原**：写入前原件字节备份（accounts/agent-backups/，每文件保留 10 份），「还原」回到接入前，网关新建的文件会被清理；多文件客户端（Codex/DSH）两阶段写入，任一失败整体回滚；
+- **远程机器用 CLI**：客户端装在别的电脑时，curl /agents/cli 取配置器在客户端机器上跑（改本机配置、只从网关取模型表）；
+- **安全边界**：写配置是面板会话 + loopback-only（改的是网关所在机器的文件，远程/容器按设计拒绝）；API Key 只写进客户端本地，网关侧 state 只存 sha256 指纹。
+
+**② CI 独立测试门禁**（.github/workflows/tests.yml）—— #23（镜像漏 COPY 模块）的根因是测试只在本地跑：
+- 矩阵 Ubuntu py3.9（README 宣称的最低版）/ Ubuntu py3.12 / Windows py3.12，push(main / v* tag) + 全部 PR 触发；失败套件完整日志上传 artifact；
+- **发版纪律上 CI**：v* tag 必须等于源码 VERSION（带错 tag 的发版出不了门）；
+- 套件跑完 checkout 必须干净（scripts/check_clean_checkout.py——往仓库写东西的套件直接红）。
+
+**③ 深色主题 + 页内导航**（wb WebUI 模式移植，详见 🎨）。
+
+**🐛 问题修复**
+
+- **/v1/responses 扁平工具 400**（PR #30，daothinh）：Responses API 的工具是扁平形态（{"type":"function","name":...}），上游 chat 端点要求嵌套 tools[].function；normalize_tools() 原来只在 chat 路径跑，responses 与 Anthropic 桥接双双跳过 → 修进出站咽喉 build_qoder_body()，三条路径一次全覆盖（幂等：已嵌套的不动）；
+- **容器部署安全**（wb 修过的真实事故）：容器原来不带 --lan，端口发布到宿主网络而 Key 校验默认关闭——等于把上游额度向全网段裸奔；现在强制生成随机 Key（打印在启动日志，docker logs | grep -i "api key"）；
+- **测试时区夹具符号反了**（CI 首跑抓到的潜伏 bug）：_ts() 想构造「UTC+8 的 h:m」的 epoch，本地 offset 的加减号写反——本地恰好 UTC+8 时两个错误抵消所以从没红过，UTC runner 上 7 条窗口断言红 5 条；
+- **#52 抽取器只读第一个 script 块**：页面新增 head 主题脚本后，第一个块是主题脚本（不含被测函数）→ 误报 missing；改为遍历全部块拼接。
+
+**🎨 体验优化**
+
+- **三态主题**：浅色 / 深色 / 跟随系统（右上角切换器，偏好存 localStorage，head 内联脚本防闪白；深色含全部硬编码色覆盖层）；
+- **页内区块导航**：每页 section 现场生成左侧导航（标题取 h2、稳定锚点、滚动高亮、可收起、#锚点直达；窄屏转横向胶囊行）；
+- **页签记忆**：记住上次页签，刷新不回首页；内容区放宽到 1800px + 自适应留白；
+- **工具栏去重**：删掉与三态开关完全重叠的「⇄ 切换默认出口」按钮；9 按钮语义分组，低频全局动作收进「批量操作 ▾」；删除死代码 refreshAccounts/queryCredits；修正遗留品牌名 wb-proxy-console.log → qoder-proxy。
+
+**⚠️ 其他变更**
+
+- **Docker 镜像补 HEALTHCHECK**（跟随 PORT，重映射端口仍正确报告健康）；compose healthcheck 同步跟随 PORT；
+- run_all.py 增加 --jobs / --logs（CI 与本地同一条命令，失败日志落可见目录）；
+- 新增**整页加载层**测试套件（_test_dashboard_full_load.js：手写真 DOM 桩 eval 整个主 script 块——「切片绿 ≠ 整页绿」的补口）；.gitattributes 钉死 html/js 行尾（消除 md5 指纹噪声）。
+
+**验证**：全量 29 suites / 1024 checks / 0 failed（含 PR #30 分支与合并后 main 各复跑一次）；CI 三平台（Ubuntu py3.9/3.12 + Windows py3.12）绿；智能体配置端到端实测（apply 增量写入 / restore byte-exact / 新建文件清理 / state 清空）。
+
+### v1.3.7
+
+**✨ 新增功能**
+
+**① 双区自动路由的完整体验（#26 续）** —— v1.3.6 把自动路由发出去了，这一版把它变成**看得见的**：
+- **「本次实际出口」不再靠猜**：usage 行新增 `realm_reason`（三态），面板据此给出**确定结论**：
+
+  | `realm_reason` | 含义 | 面板显示 |
+  |---|---|---|
+  | `model_missing` | 当前区官方清单里没有这个模型 | 「模型不在默认出口，已自动改走 X 区」 |
+  | `no_account` | 模型本区有、被**账号可用性**推走 | 「默认出口无可用账号，已自动改走 X 区」 |
+  | `""`（**显式空串**） | 明确**没有换区** | 「按默认出口执行」 |
+  | **键不存在** | 字段上线前的**旧行** | 「未知（旧记录）」—— 不给用户一个假结论 |
+
+- **最近请求表新增「区域」列**：直接来自 usage 行的 `realm` —— 反映的是**每次对话**的真实出口，不是面板自身请求；
+- **带时间**：「最近一次对话 12:03 走了国内版 · 未换区」—— 持久化字段才有的信息量。
+
+**🐛 问题修复**
+- **面板数据源从响应头迁到 usage 行**：v1.3.6 冻结的契约（`X-Qoder-Realm` 只在 chat 类请求出现）让面板**拿不到**那个头（面板发的都是管理端点）→ 改为读 usage 行，**绕开长连接状态泄漏那一整类问题**，而且**历史可查**；
+- **反向保险**：新增「`dashboard.html` 全文不得再读 `X-Qoder-Realm`」的断言（**检查目标是被守护的文件，不是测试自己**），并用**金丝雀自证**（注入一行读取 → 必红）证明它不是摆设 —— 两次独立跑过；
+- **两条「片段依赖自检」**：测试用的 eval 片段必须自带 `RECENT_SNAPSHOT` 声明，否则**当场红并说明原因**（而不是崩溃成一个读起来像产品坏了的 ReferenceError）；并断言该声明在 `dashboard.html` 里**顶层唯一、引用都在函数体内** —— 把「浏览器里会不会炸」变成可执行断言。
+
+**🎨 体验优化**：见 ① 的三条。
+
+**⚠️ 其他变更**
+- **口径收紧两处**：最近一次对话取「**最近一条非 error 行**」（失败行可能没有真实出账区，拿它当结论是错的）；旧行显示「**未知（旧记录）**」而不是「没换区」；
+- **流程：报告「全绿」时附两枚指纹**（被测文件 md5 + 套件副本 md5）—— 本轮一次误报（**过期副本**被读成产品故障）就是靠这条把范围锁死的；复核方也贴自己跑的那份，**先对齐再谈结论**。
+
+**验证**
+- 双入口全绿：`python tests/run_all.py` → **28 suites / 1005 checks / 0 failed**（前端六套件 **105** = 9/19/19/15/12/31）；`python _test_qoder.py` → **626 passed / 0 failed**；
+- **金丝雀两次独立跑过**（作者一次、复核者一次）：注入读取 → 反向保险必红；真文件 → 全绿。
+
+### v1.3.6
+
+**✨ 新增功能**
+
+**① 双区自动路由（#26）** —— 不用再手动切面板：
+- **模型独占时自动试另一区**：某模型只在一个区有的（7 个 —— `gm51model` / `q37fmodel` 仅国内，`cmodel` / `efficient` / `performance` / `smodel` / `ultimate` 仅国际）会自动改用那个区；
+- **无可用账号时回退另一区**；
+- **面板三态开关**：自动 / 锁定国内 / 锁定国际（「自动」由 `QD_AUTO_REALM` 控制、改它需重启；锁定走既有的区域切换）；
+- **本次实际出口可见**：换区时响应带 `X-Qoder-Realm` 与原因 `X-Qoder-Realm-Reason: model_missing | no_account`，面板据此显示「这次实际走了哪个区、为什么」；
+- **`/v1/models?merge_realms=1`**：两区并集视图（含区域标注与 `realm_exclusive`），**opt-in** —— 默认仍是单区视图。
+
+**边界与原则（重要）**
+- **显式优先**：`?realm=` / Key 绑定 / `X-Realm` **永远优先于自动路由**，自动只在用户没指定时兜底；
+- **判得出才动**：只在「模型独占」或「当前区无可用账号」时换区，判不出就维持现状；
+- **MiniMax 那两个是数据驱动排除**（同 key 两区型号不同即不猜），**不是硬编码黑名单** —— 未来同类模型自动覆盖；
+- **跨区会断会话亲和** —— 这是**接受的**：那两种情形下当前区本来就没有可用的亲和目标，解绑的是一条已失效绑定；
+- **不违反限额护栏**：护栏是账号级的，换区即换到另一个账号，它自己的阈值照常生效。
+
+**🐛 问题修复**
+- **路由规则叠加时的优先级错误**（本轮自查发现）：账号回退逻辑只看账号数，会把「**模型规则已经推走的区**」按账号**换回原区** —— 全局在 cn、请求仅 intl 有的模型、而 intl 恰好没号时，请求会被送回 cn，打到「没有这个模型」的上游，**用户看到的是语义错误而不是「没号」**。已修：**模型归属优先于账号可用性**。
+
+**🎨 体验优化**
+- **看板：自动换区与原因可见**（三态开关 + 「本次实际出口」），并严守一条原则：**只在真的抓到响应头时才说「自动换区」**；没抓到显示「未观察到换区」；有头但与默认出口一致时显示「（与默认出口一致）」—— **不给假指示**。
+
+**⚠️ 其他变更**
+- **`tests/_tools/` 进仓**：`dash_extract.js`（锚点缺失即抛 + 按函数做纯度检查）、`dep_scan.py`（迁移依赖扫描）+ 两个自测 —— 后来人可直接复用这些判断；
+- **`tests/README.md` 新增「基线数字（提交前核对用）」**：28 suites / 989 checks / 前端 89 / legacy 630，附提交前三步 —— 其中一条是「**用 `git add -A`，不要只用具体文件名**」（新增套件会被静默漏掉，表现是**全绿但总数变小**）。
+
+**验证**
+- **双入口全绿**：`python tests/run_all.py` → **28 suites / 989 checks / 0 failed**；`python _test_qoder.py` → **630 checks / 626 passed / 0 failed**；
+- **自动路由逐条实测**：7 个独占模型 **7/7** 正确、双区都有的 12 个 **12/12 保持当前区**、显式优先级**六条全对**、换区可见（日志 + 响应头）、并集 **19 条**去重正确；
+- **能红证据**：改动前那 7 个模型在当前区不可用（输出已留存）。
+
+### v1.3.5
+
+**✨ 新增功能**
+- **Linux / macOS 启动脚本**（社区贡献 @jk-uzi）：`start-qoder-proxy.sh` / `start-qoder-proxy-lan.sh` / `allow-firewall.sh`，与 Windows 的 `.bat` 一一对应；运行时探测链相同、要求 Python 3.9+、用 `exec` 让终端生命周期等于进程生命周期；`allow-firewall.sh` 检测 ufw/firewalld/nftables/iptables、用 `-C` 保持幂等并打印回滚命令。
+
+**🐛 问题修复**
+- **Anthropic 入口的 thinking 档位被静默丢弃**（@jk-uzi）：`/v1/messages` 收下 `thinking.budget_tokens` 却没有把档位表传下去 → 每个请求都静默跑默认档位。**这是我们在接线时漏掉的一步**（桥接设计文档里写过）。已补 `catalog_meta_for()` 并把 meta 传进转换层。
+- **非对象上游帧会让流崩溃**（@jk-uzi）：信封 `body` 可能是数组或标量，三处直接 `.get()` 就抛 `AttributeError` → 流式中途崩、聚合整单失败。现在按类型分流（放行 / 丢弃 / 不动 inner）。
+- **双区账号池下冷却判断用错口径**（#29 @ismodo）：冷却函数问「全局有几个账号」，选号循环问「本区域有几个可用」——双区池里两数不等，本区域唯一的账号被当成多号池，于是上游请求的 30/60s 冷却原样生效、超出等待预算，**一次本可 3 秒自愈的排队变成中断**。两处现在共用同一个 helper；等待逻辑改为**收集候选取最小值**（不再因某个号的长频控而放弃其它号的短冷却）。
+- **Windows 下网关会因系统代理开关而全挂**（#27 @mengmengma0104）：`urllib` 在 Windows 会**回退读 WinINET 注册表**，且默认 opener 在**首次请求时固化**代理配置 → 代理工具关闭后网关仍去连已无人监听的端口，直到重启。现在自建 opener、**只从环境变量取代理**：设了 `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` 就走它，没设就直连（不回退注册表），且**每请求现读、无固化**。
+- **intl 账号账本被写全 0 / 活动文案误报 / `lastCheckin` 恒空**（#25 @xiarunjie）：
+  - 账本写入此前**无任何合理性守卫** —— 一个退化响应（exceeded + 两个 quota 全 0 + CN 的永不过期占位）会把健康的 399 覆盖成 0，**而且不记录原始响应**，事后无法回溯。现在：保守判定（**真·余额归零照常覆盖**）、拒绝覆盖时**落盘截断的原始摘要**、调度器**排除本轮凭证失效的账号**（不再用失效 token 打上游）；
+  - 看板与一键签到把**已领取**的奖励报成「暂无可领取」—— 因为过滤发生在归类之前，而 intl 那条活动的 `actionType` 不是 `CLAIM_BENEFIT`。现在**先归类再决定是否参与领取**；`lastCheckin` 也改成**已领取时同样盖章**（此前只在「我们自己去领」时盖章 → `can_checkin` 恒真 → 调度器每轮重走同一个号）。
+- **批量刷新路由对账号集合没有守卫**：`/accounts/credits`（GET/POST）、`/accounts/refresh` 会**对禁用号与坏凭证号也发请求** → 它们的账本被反复零化。现在统一走 `_refreshable_accounts()`，被跳过的号以 `{uid, reason}` 出现在响应的 `skipped` 里（**不静默少项**）。
+
+**🎨 体验优化**
+- **看板区分「未知」与「0」**：此前 `energy || 0` 让 `None` 与 `0` 塌成同一个显示 —— **这正是 #25 报告者被误导的界面症结**。现在三态分明（正常数字 / **未知**（warn 色 + 原因）/ 真 0）；批量视图的合计会标注「**已排除 N 个未知账号**」并列出是哪些。
+
+**⚠️ 其他变更**
+- ⚠️ **一条语义变化（#29 的连带）**：频控窗口 **≤10s** 时，网关会**等待并重试**，客户端收到的是**延迟后的成功**而不是 429。这是自愈（比中断好），但与旧行为不同；**>10s 的长频控不受影响**，仍返回 429。
+- **测试**：编排总数到 **974 条**；`tests/README.md` 增补「**桩的保真度**」纪律（元素桩照 DOM 语义做、兄弟函数显式注入空桩、锚点缺失即抛、按函数而非区间做纯度检查）。
+
+**验证**
+- **双入口全绿**：`python tests/run_all.py` → **27 suites / 974 checks / 0 failed**；`python _test_qoder.py` → **630 checks / 626 passed / 0 failed**；
+- **每条修复都带能红证据**：冷却四组数字（30→3 / wait 0→3 / 长窗保持 0 / 多号坑 0→3）· 账本污染前后（`ZEROED: ['u-disabled','u-no-cred']` → `[]`，且断言 `calls == 0`）· 文案矩阵三档一致 · **CN 对照组逐字 SAME（8/8）** · 非对象帧的 8 条 FAIL 自证；
+- **一条流程留痕**：`VIEW_DETAILS` 该不该「算已领」出现过新旧断言冲突，最终判定**不该把显示与盖章分开**（分开会重现 `lastCheckin` 恒空那条链），并把原断言拆成 E3a/E3b 各自钉住新语义与「防过度」的界。
+
+### v1.3.4
+
+> ⚠️ **如果你在用 `1.3.2` 或 `1.3.3` 的预构建镜像，请升级到本版** —— 那两个镜像里**少了一个模块文件**，容器会**启动即崩**（`ModuleNotFoundError: No module named 'qoder_anthropic'`）。本版已修复，并加了 CI 冒烟防止再犯。
+
+**🐛 问题修复**
+- **镜像漏 COPY `qoder_anthropic.py`**（issue #23，报告者 loki0411）：`qoder_proxy.py` 从 1.3.2 起 `import qoder_anthropic`，但 `Dockerfile` 的 COPY 清单是逐个文件枚举的，**新增模块时漏了它** → 镜像里没有这个文件 → 容器启动即 `ModuleNotFoundError`、无限重启。
+  - 报告者的排查很完整（镜像内 `find` 无该文件、镜像内 `qoder_proxy.py` 的 sha256 与 tag 一致、对照 1.3.1/1.2.19 自洽可启动），我们照此复现并修复；
+  - **为什么我们的测试没抓到**：所有测试都跑在**源码树**上，而这是**镜像内容**问题；CI 的构建步骤**不会因为漏 COPY 而失败**（构建本身成功）。**四个发布的验证里，我们一次都没真正运行过容器** —— 这是流程缺口，不是测试缺口；
+  - 受影响范围：**`1.3.2` 与 `1.3.3` 的预构建镜像**（`latest` 在 v1.3.4 发布前指向 1.3.3，因此也受影响）。**源码运行不受影响**；
+  - 临时绕过（报告者提供，仍可用）：compose 里挂只读文件 `- ./qoder_anthropic.py:/app/qoder_anthropic.py:ro`；升级到本版后可移除。
+
+**✨ 新增功能**
+- **CI 冒烟（防复发）**：构建之后新增一步，用**本地单架构镜像**实际跑三件事 ——① **按源码里的 `import qoder_*` 反查每个模块文件是否真的在镜像里**（这次就是这么漏的，将来任何新增文件忘 COPY 都会立刻红）；② `import qoder_proxy, qoder_anthropic` 确实可导入；③ 起容器并**等 `/ping` 回应**（60 秒超时，失败打印容器日志）。
+  > 一句话教训：**构建成功不等于镜像能跑**。
+
+**⚠️ 其他变更**
+- README 安装段补了**镜像与版本直达入口**（GHCR 包页面 + Releases 链接、可用 tag 形状、双架构说明、以及「仓库侧栏未必列出容器包」的提示）。
+
+**验证**
+- 双入口测试全绿：`tests/run_all.py` → 19 suites / 881 checks / 0 failed；`_test_qoder.py` → 630 checks / 0 failed；
+- **镜像层验证由新增的 CI 冒烟承担**：本版 CI 里会执行上面三步（其中第 ① 步在修复前必然失败 —— 因为 `qoder_anthropic.py` 不在镜像里）。
+
+### v1.3.3
+
+**✨ 新增功能**
+
+**① 前端测试破题**（工作包点名的第五类空白）：`tests/` 新增 **4 个前端断言套件（62 条）**，把前面几轮的前端证据**从会话里搬进仓库**：
+- **`effort_parity`（9 条）** —— **逐行审计列与汇总视图的四类计数一致性**。这是这批里最有价值的一条：同一份数据两处实现，口径一旦漂移，运维就会看到**互相矛盾的数**（与我们 `sum(by_key)==sum(by_account)` 是同一类问题）；
+- **`limits_auth`（19 条）** —— **403/401 分流**（把 403 当鉴权失效会让用户白白掉登录、真原因被吞 —— 这是修过的真 bug 的回归网）+ 限额保存载荷形状（空串=继承 / 0=关闭 原样传递）；
+- **`effort`（19 条）** —— 档位三态渲染 + Key 列四态；
+- **`log_and_badge`（15 条）** —— 日志**增量追加**的行为断言（追加而非重建）+ 护栏四态徽标。
+- 做法：**自读 `dashboard.html` + 抽 script 块 + 内联元素桩**，**没有引入 jsdom**（守住零依赖红线）；配两个工具：**`tests/_tools/dash_extract.js`**（锚点缺失即抛 —— 防「切片拿到空串、断言照样通过」这种**假绿**）与 **`dep_scan.py`**（迁移依赖扫描）。
+
+**② 按 Key 的档位分布**（矩阵下方）：一眼看出**哪个 Key 受影响最多**（多少请求被挪档、多少被丢弃）。这是把 P1-3 的审计口径从「逐行可见」升级成「按 Key 汇总可见」；**零额外请求**（复用已拉回的最近请求行）；口径行明写「基于最近请求页样本，**不是全量聚合、数字不可相减**」。
+
+**🐛 问题修复**：Key 列 tooltip 不再出现后端桶名的字面量 —— 界面（含 tooltip）均不泄露实现细节。
+
+**🎨 体验优化**：见 ② 的汇总视图。
+
+**⚠️ 其他变更**
+- **测试迁移策略调整（有数据支撑，不是妥协）**：写了一个依赖扫描工具（提取每段定义的全局名 → grep 后续段引用），跑完 **55 个段**后 `--leaf-only` **没有任何输出 —— 不存在纯叶子段**（段间共享显式全局如 `time` / `base64`，也有隐式的、供后续段继承的绑定）。
+  **结论：逐段迁移在这个文件结构下，边际成本已高于收益。** 因此调整为：**legacy 作终态**（它是**在用的测试文件**、630 条断言、持续全绿，不是技术债）、**新测试一律走新套件**、迁移只做低风险部分 —— 让它**自然冻结**，而不是强行拆完。
+- **迁移期三条纪律**（三次回滚换来的）：① **迁移与修 bug 不混在同一次编辑**；② **共享头部显式抽出**（别让每个套件自己抄 import）；③ **先做依赖扫描**（只有叶子段适合独立成套件）。
+
+**验证**
+- **双入口全绿**：`python tests/run_all.py` → **19 suites / 881 checks / 0 failed**；`python _test_qoder.py` → **630 checks / 626 passed / 0 failed / 4 skipped**；
+- **4 条「改坏 → 必红」自证**：parity（9 FAIL）· auth（7 FAIL）· log（10 FAIL）· effort（EXIT=1）—— 每条新套件都证明了自己**真的在守**，而不是「看起来绿」；
+- **一条工具经验**：改坏点里含**非 ASCII** 时 PowerShell 的转义会坑人（试两次没命中），**改用 Python 按行号替换**一次成功 —— 已记进团队纪律。
+
+### v1.3.2
+
+**✨ 新增功能**
+
+**① Anthropic 原生入口 `/v1/messages`** —— Claude Code 这类 Anthropic 客户端可直接接入：
+- 新增独立转换模块 `qoder_anthropic.py`（**零依赖纯标准库**）：入站映射（14 个字段）、出站（非流式 + 流式事件流）、usage 守恒映射、effort 断点映射（逐模型 clamp + 单调不降）；
+- **接线的三条要害**（都配了断言）：① **`x-api-key` 头**（Anthropic 客户端不用 Bearer，漏了会**全量 401**）；② **形态决策单点**（结构化与否只判一次；两处各判会出现「桥接层以为结构化、flatten 走文本化」的错配）；③ **守卫链逐字复用**：`sse_with_heartbeat(recover_leaked_tool_calls(iter_inner_sse(...), allowed_names=...))`，且 `allowed_names` 必须取**转换后的** chat 请求（用 Anthropic 原始 payload 会取不到工具名 → 回读守卫失效）；
+- **泄漏回归（新入口）**：#8 / #9 / #11 三条历史样本走新入口 → **守卫仍然生效**（有日志实证），#8 还能正确还原成 `tool_use` 块。**新入口没有变成第三个绕过守卫的门**；
+- **三条已知差异**（已写进 README 已知限制）：**流式不做流内信封重开**（`message_start` 已发出、重开等于两个 start，协议违规；改为发明确的 `event: error` 终态事件而非静默关流；非流式仍完整重试）· **默认不发 thinking block**（Anthropic 要求 `signature`，我们生成不了也**不伪造**；`QD_ANTHROPIC_THINKING=empty` 为实验开关）· **入站 thinking 一律丢弃**。
+
+**② 模型闸门**：全局 `banned_models` + 每个 API Key 的 `models` 白名单（fnmatch 通配）。
+- **统一落点 `_model_precheck`、三个入口共用**（chat / responses / anthropic）—— **不是三份实现**，天然没有「某个入口绕过」的缺口（已用断言覆盖 `/v1/messages`）；
+- **拒绝发生在本地**：出站层与网络层**两层计数均为 0**；并含**对照组**（白名单内放行）与**默认不变**（空配置放行）—— 防「一律拒绝也绿」；
+- 同理，`_clean_key_entry` 是白名单重建，**`models` 必须显式保留**（否则每次保存被静默丢弃 —— 与早前 limits 同型的坑，已断言钉住）。
+
+**③ 会话亲和长度上限**：`QD_AFFINITY_MAX_MSGS`（**默认 0 = 关闭**）。⚠️ **阈值没有照抄参考项目** —— 那张断连率表来自单一实例、333 个请求，上游也不同；等我们自己的数据再定。
+
+**🐛 问题修复**：无
+
+**🎨 体验优化**：Anthropic 入口的三条已知差异写进 README（读者需要知道边界在哪）。
+
+**⚠️ 其他变更**
+- **`tool_choice="none"` 形态对齐**：从「连 `tools` 一起删」改为「**保留 `tools` + 写回 none**」。上游 body 对比确认**只影响 `tools` 一个字段**（其余 7 个非随机顶层键全同）；开关 `QD_TOOLCHOICE_NONE_DROPS_TOOLS=1` 可一键回退。
+  - ⚠️ **一条反例（如实登记）**：参考项目自己的注释说「**其上游并不真正遵守 none**」（保留 tools 后仍回 `tool_calls`），**与我们工作包对 qoder 的实测相反**。我们按 qoder 的实测默认新行为，但**留了回退开关** —— 若观察到 `none` 下仍回 `tool_calls`，设它即回旧行为。
+- **出站收口**（P1-2 第一步）：把带凭证的直连收进统一出站函数（不变量基线 **3 → 2**，且**中间态红过**，证明断言在守）；**并判定「按账号出站代理」不做** —— 账号全部由用户本机导入（出口天然相同）、全局代理已**零代码支持**（`HTTPS_PROXY`，README 已补）、无任何「上游按 IP 风控」信号。若将来真撞上，最小方案约 25 行（已留档）。
+- **测试工程化**：`tests/` 编排现 **15 个套件 / 819 断言**；从旧单体文件**已迁出 4 段**（每批双入口对比、账目精确）；迁移期两条纪律已写进 `tests/README.md`（路径一律基于 `__file__`；每套件自己的临时目录、不写仓库内共享路径）。
+
+**验证**
+- **双入口全绿**：`python tests/run_all.py` → **15 suites / 819 checks / 0 failed**；`python _test_qoder.py` → **626 checks / 0 failed / 4 skipped**；
+- **本轮新增能红证据 3 组**：Anthropic 模块（改前 `ModuleNotFoundError`）· 接线（**4 红 → 16 绿**）· 模型闸门（**4 红 → 16 绿**，明细显示`未实现时请求放行到出站口`）；
+- **旁路核查**：确认模型闸门三入口共用同一判定，**不存在「chat 被拦、messages 绕过」**；
+- **一处自我更正也已登记**：某次 `run_all` 出现过 1 failed，追查为**撞上并发编辑的中间态**（不是回归）；重跑 0 failed。这也提醒：**并行开发期的瞬时红要先排除中间态再当回归**。
+
+### v1.3.1
+
+**✨ 新增功能**
+
+**① 测试工程化** —— `tests/` 并发编排上线：
+- `tests/run_all.py`：**并发**、每套件独立日志、失败打 tail 25 行、强制 UTF-8、无匹配套件返回 2（防「0 passed / 0 failed → exit 0」这种假绿）；
+- **11 个套件 / 747 条断言**，含工作包点名的三类空白：**代理不变量**（参数穿透式断言 + 基线登记）、**keep-alive 早拒**（裸 socket）、**前端 DOM 断言**（首个 `.js` 套件，自读 dashboard.html + 内联元素桩）；
+- **兼容入口保留**：`python _test_qoder.py` 照旧可用；套件正逐段从它迁出（本轮已迁 2 段，legacy 仍承载其余 —— **迁移期间总数只增不减**）；
+- ⚠️ **一处更正**：工作包让照抄的 wb `tests/_dom_stub.js` **并不存在**（递归查 0 命中）；它的真实做法就是「每个套件自读 dashboard.html + 内联手写约 15 行元素桩」，我们按后者实现，没有引入 jsdom（保住零依赖）。
+
+**② 账号退避 / 熔断 / 降权三族**：
+- `note_soft_rate`（软限流**指数退避**：600 → 1200 → 2400，封顶 7200）· `note_failure`（硬错误**熔断**）· `note_unknown_failure`（未知错误**降权**）· `note_success`（统一复位入口）；
+- **接线 6 处** —— 这正是教训所在：三族在接上调用点之前**是死代码**（有断言证明接线前 6 处计数全 0）；
+- **防误接（反例断言）**：直连 401/403 · **信封 429（10605 排队，接了会让一次排队冷掉全账号）** · 内容审核 · **402 余额不足** · 单号池 → 三族**零调用**；
+- **单号池不接**（`total>1` 条件）：单号池接熔断/长退避 = **变相打死账号**；
+- 运维恢复：三族状态是**内存态**（不落盘）→ 重启即清 / 等窗口自动过（30 分钟起、封顶 6 小时）；面板的「重新启用」走 `clear_error`，**有意不清熔断**。
+
+**③ 用量字段与聚合**：
+- usage 行补 `reasoning_effort` / `reasoning_effort_requested` / `key_id`（全脱敏）；**三态可辨**：同值 = 原样透传 · 不同 = 被挪档 · **空串 = 请求了但未下发**；
+- 新增 **`GET /usage/by-key`**（与 `/usage/by-account` **逐字对称**；`sum(by_key) == sum(by_account)` 不变量已断言；缺 `key_id` 的行归 `(no-key)` 桶、**不丢弃**）；
+- 面板：最近请求表加 **Key** 与 **档位** 两列（档位三态一眼可辨）· 指标页新增**按 API Key 用量透视**（Key / 请求数 / 输入 / 输出（含思考）/ 缓存 / 总 token / 占比 / 积分 / 模型前 5，按 token 降序）。
+
+**🐛 问题修复**
+- **临期积分分派：管道就绪、当前不触发** —— 实测上游 `/quota/usage` **不返回 per-package 到期字段**（只有顶层 `expiresAt`，且它可能是「按月重置」而非「到期作废」）。处置：**防御性透传**（上游一旦补字段即自动生效、无需改码）+ **刻意不把顶层 `expiresAt` 贴到包级** —— 硬贴会让「按月重置」的额度被**优先消耗**（反向浪费）。
+
+**🎨 体验优化**：见 ③ 的两处 UI（档位三态 + 按 Key 透视）。
+
+**⚠️ 其他变更**
+- **测试方法论（写入团队配方）**：parity 类断言**只能用 `requests` / token / `credit`**（`models` 是**前 5 名截断**的展示字段，拿它求和必假失败）；error 行**两侧都跳过**；窗口按 `row["at"]`（epoch）过滤、**完全不看 `iso`**，且**缺 `at` 的行被当 0**（夹具必须给 `at`）；窗口边界是**闭区间**；**桶数不等是正常语义**（一个 Key 可打多个账号）。
+- **验证配方补充**：任何「逐字节一致」类对照**必须用固定夹具或同一份快照** —— 真实日志仍在被追加（`analytics` 统计 error 行、 `by_account` 跳过），否则会把「日志在长」误判成「改动引入差异」。
+
+**验证**
+- **双入口全绿**：`python tests/run_all.py` → **11 suites / 747 checks / 0 failed**；`python _test_qoder.py` → **658 checks / 0 failed / 4 skipped**；
+- **每个新套件都有「改坏 → 必红」自证**（本轮 6 条：护栏等号边界 · 代理绕过点 · 前端配色 · 三族接线计数 · parity 口径 · dashboard 渲染）；
+- **三族接线**：接线前 **6 红**（计数全 0，正是 6 个待接点）→ 接线后 **13 绿**；
+- **parity 修绿**的过程本身也是个证据：期望值先按实测口径**重算**（无窗口 645 / day 145），而不是改实现去迁就断言。
+
+### v1.3.0
+
+> **自 v1.2.12 以来的主要变更概览**：机器身份落盘缓存 + 种子机制修正（容器重建不再换设备）、VM 抖动多数表决（不把身份固定在少数派）、工具历史结构化直传、只读积分路由 `GET /credits/summary`、usage credit 统计修复 —— 以及本版两项：**事实性限额护栏**与**用量区间 / 时间序列**。
+
+**✨ 新增功能**
+
+**① 事实性限额护栏** —— 账号级预算闸门：**用尽自动换号**，而不是等上游返 402/429。
+- 四条护栏：**余额地板**（`reserve_credits`）· **当日 token**（`daily_token_limit`）· **当日 credit**（`daily_credit_limit`）· **单模型当日 token**（`model_daily_token_limit`）；
+- **三层作用域**（global + realm 两级）：**留空 = 继承**、**显式 0 = 关闭**；
+- **后台余额刷新**：每 tick 最多刷一个最陈旧账号（30min tick + 12h TTL），**惰性启动**（阈值全 0 时线程根本不存在，零副作用）；
+- **计数来自本地 usage 折叠** —— 不新增任何上游调用；
+- **402 / 额度停放**：停到 **UTC+8 每日 10:00**（qoder 自己的重置窗口，非通用 4am），**仅余额恢复**可提前解封；
+- **临期积分优先分派**：7 天内到期的额度优先消耗（smooth weighted round-robin），**默认窗口 0（关）**。
+  - ⚠️ **当前状态（重要）**：上游额度接口**不返回 per-package 到期字段**（实测只有 `total/used/remaining/percentage/unit`，到期信息只有顶层 `expiresAt`）→ **即使开启窗口也不会生效**；
+  - 我们做了**防御性透传**（上游一旦补字段即自动生效，无需改码），并**刻意不把顶层 `expiresAt` 贴到包级** —— 它可能是「**按月重置**」而不是「到期作废」，硬贴会让这类额度被**优先消耗**（反向浪费）；
+- **面板**：设置页限额表格（带**量纲提示**）+ 账号行**四态徽标**（未启用 / 未知 / 已暂停 / 正常）。
+
+**② 用量区间与时间序列**：`/usage/analytics` · `/usage/by-account` · `/usage/perf` 支持 `?range=day|week|month|all|custom&since=&until=`；新增 **`/usage/timeseries`**；`realm=all` 现在是真正的通配符（此前 `/usage/perf` 采样恒为 0）。
+
+**🐛 问题修复**
+- **限额设置此前不会生效**（接线缺口）：**没有任何生产代码**把 limits 推给账号池 —— 配置写进 `settings.json` 就停住了，阈值恒 0、守卫永不触发。现在**启动时**与**设置保存后**各推一次（free 名单同批推送，避免空集拦住全部模型）；
+- **后台刷新线程此前会静默死掉**：`AccountPool.log` 默认实现只接受一个位置参数，而刷新线程传了 `level=` → 一 tick 就 `TypeError` 退出，整条刷新链路失效；
+- 设置页改阈值现在会打印状态翻转日志（此前只有其它路径打）。
+
+**🎨 体验优化**：面板两处（限额表格的量纲提示、账号护栏四态徽标）—— 见上 ① 末条。
+
+**⚠️ 其他变更**
+- ⚠️ **量纲说明（重要）**：qoder 的 credits 是**积分点数**（实测账号区间 **0~1100**），**不是 token 量级** —— 照 token 量级填阈值会**永远拦不到任何账号**；
+- **默认全部关闭（0）** —— 不给任何非零默认值；
+- 参考材料：本仓 `.team/_gap/`（双向差距分析 6 份文档 + 实测证据）。
+
+**验证**
+- 全量 **693 checks / 0 failed**；
+- **端到端（真实链路，非桩）**：配置 → `quota_enabled=True` → **后台线程启动** → 守卫命中 → `pick` 返回 None → **网络层调用计数 0**（确实没发上游）→ 复位后账号恢复；
+- 配置层 A1-A5 · 守卫层 B1-B6 · 汇合点 C1-C3 · 折叠 D2-D4 · 后台刷新 E1-E5（含惰性启动）· 派发偏好 F1-F6（含「默认关时与改动前等价」「永不过期占位不参与权重」两条边界）· 停放时钟 G1-G2 **全部通过**；
+- **一条流程留痕**：这条端到端判据前五轮不闭环，根因是**实现侧接线缺失 + 测试侧判据位置错误**各占一半 —— 判据应拦在**网络层**（是否真的出网），而不是「`open_upstream` 是否被调用」（网关正常路径本来就会进它、由它内部选号）。
+
+### v1.2.19
+
+**✨ 新增功能**：无
+
+**🐛 问题修复**
+- **usage 记录（与面板）的 credit 统计恒为 0**（issue #22，by @jianjiuss）：`_extract_usage()` 读的是**单数** `usage.get("credit")`，而上游给的是**复数 `credits`**（附 `original_credits` / `billable`）—— `usage.get("credit")` 恒为 None，于是**所有** usage 记录都记成 0（报告者实测 426 条流式 + 16 条非流式全部为 0）。
+  - 现在**复数 `credits` 优先、保留单数兜底**（防其它区域字段差异）；
+  - 顺带记录 **`original_credits`**（**参与聚合** —— 折扣时段对账要用）与 **`billable`**（仅写进行、**不进聚合** —— 布尔求和没有意义）。
+
+**🎨 体验优化**：无
+
+**⚠️ 其他变更**
+- **历史数据不可回填**：修复只影响此后写入的行；此前记录里的那个 0 是**永久性的**（当时的原始 `credits` 从未落盘）。我们不会在日志或文档里暗示它可恢复。
+
+**验证**
+- 全量 **657 checks / 0 failed**（[39] 段 10 条）；
+- **修复前的红色证据已留存**（落盘前抓到的原始输出：复数 `credits=97.96` → `credit: 0`；两者都有时旧实现取单数）—— 没有它，这个回归网就是空转；
+- **变异自证 4 条**：改回只读单数 → 必红；单数优先 → 必红；抽掉 `original_credits` → 必红；把 `billable` 塞进聚合表 → 必红；
+- **面板不受影响**（已 grep 确证：它读的是账号对象的 `credits.remain`、模型元数据的 `credits`、签到侧的 `earned_credit`，**没有一处**读 usage 行的 `credit`）；
+- 未覆盖（如实）：`credits` 为字符串或 `None` 的形态（`or` 链会把 `"0"` 当假值，属理论边界）。
+
+### v1.2.18
+
+**✨ 新增功能**
+- **`GET /credits/summary`：API-key 级鉴权的只读积分汇总**（issue #21）——给下游集成（如网关池面板）展示各账号池余额用。
+  - 鉴权走 `_key_ok()`（**API Key 或面板会话均可**，未设 Key 时放行），**刻意不放进 `_is_panel_route()`** —— 否则就会要求 `X-Panel-Token`，与用途相反；
+  - **只返回本地已登记的 `credits`，绝不触发任何上游查询** —— 这是本 issue 的核心约束（对照 `GET /accounts/credits`：那个会逐号 `fetch_credits()` 强刷，适合作者手动点、不适合机器轮询）；
+  - 返回 `{ by_realm, totals, accounts[], note }`，每行含 `{uid, nickname, realm, credits_remain, credits_used, credits_size, registered_at}`；
+  - **新鲜度语义写在字段名与 `note` 里**：返回的是「上次登记时的值」（签到写权威值 + 每次消耗回写），**不是实时余额**；
+  - 未登记过积分的账号**照常列出**但 `credits_*` / `registered_at` 为 `null` 且**不计入汇总**；空池 / `POOL=None` 返回空结构而非报错。
+
+**🐛 问题修复**：无
+
+**🎨 体验优化**：无
+
+**⚠️ 其他变更**
+- README 的接口一览与说明补上该路由（含「为什么不能拿 `/accounts/credits` 轮询」的对照）。
+
+**验证**
+- 全量 **647 checks / 0 failed**（[38] 段 12 条）；
+- **命门**：`fetch_credits()` 桩计数 **= 0** —— 且这次用**真实 handler** 验证（`ThreadingHTTPServer` + 后台线程 + `urllib` 真请求，鉴权 / 路由匹配 / JSON 写出全走真代码路径）；
+- **能红证据**：把实现改成「先 `fetch_credits()` 再返回」→ 命门断言必红（变异下桩被调 **3** 次 = 3 个账号各一次）；
+- **鉴权矩阵**：有效 key 200 / 无效 key 401 / 无凭据 401 / 面板会话 200 / 未设 key 放行 200（**全部 0 次 fetch**）；
+- **边界**：空池 / `POOL=None` / 无 credits 账号 / 部分 credits 全绿。
 
 ### v1.2.17
 
@@ -988,6 +1724,16 @@ python _install_umid.py          # 从官方 npm 包提取内嵌的原生 UMID �
 ### 3. 真实上游链路未经端到端验证
 
 本轮发布的改动经过：离线确定性测试（587 断言）、模块级 `py_compile`、静态核对与变异反证；**Docker 构建与容器内 UMID 组件执行**已在 Docker Desktop 29.7.2 实测（issue #12：`docker build` 成功 → 容器内 `/app/umid/runtime-info` 可执行并返回真实身份字段）。**真实上游端到端**仍未在发布环境实跑，请以你自己的部署环境验证为准。
+### 4. Anthropic `/v1/messages` 入口的三条已知差异
+
+网关提供 Anthropic 原生协议入口（`POST /v1/messages` 与 `POST /v1/messages/count_tokens`），供 Claude Code 等客户端直连（客户端用 `x-api-key` 头鉴权，网关同时接受 `Authorization: Bearer`）。为免误解，三条差异如实登记：
+
+- **流式不做「流内信封重开」**：上游可能先以 HTTP 200 建流、再在 SSE 信封里投递业务错误（如 418）。Chat Completions 路径此时会**重开上游重试**；Anthropic 路径**不重开** —— 因为 `message_start` 已经发出，重开会让客户端收到**两个 `message_start`**（协议违规，客户端容忍度未知）。取而代之的是一条明确的终态事件 `event: error`（含可读 message），而不是静默关流。**非流式仍会重试**（此时尚未向客户端写出任何字节，重试安全）。
+- **默认不返回思考内容（thinking block）**：Anthropic 规范要求 `thinking` block 携带服务端生成的 `signature`，而网关无法生成该签名（也不校验回传签名）。因此默认**不发 thinking block** —— 客户端只看到正文与工具调用，看不到模型的思考过程。可用环境变量 `QD_ANTHROPIC_THINKING=empty` 打开实验模式（发送带**空** `signature` 的 thinking block；客户端若做非空校验可能报错）。**不提供**伪造签名的选项。
+- **入站 `thinking` block 一律丢弃**：多轮历史里回传的 thinking block 不会被转发给上游——我们无法验证其签名，也不该把无签名思考回灌（避免污染模型的推理连贯性）。
+
+> 这三条都**不影响** Chat Completions（`/v1/chat/completions`）与 Responses（`/v1/responses`）两条既有入口。
+> 另：`/v1/messages/count_tokens` 是**本地估算**（CJK 感知），不产生任何上游调用；`/v1/messages` 的工具历史同样复用既有的结构化/文本化两条链路与全部回读吞掉守卫（issue #8/#9/#11 的样本已在新入口回归）。
 
 ---
 

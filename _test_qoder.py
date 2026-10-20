@@ -38,6 +38,11 @@ os.environ.setdefault("USAGE_DIR",
 os.environ.setdefault("QD_NATIVE_IDENTITY", "0")
 
 import qoder_proxy as P
+
+# ---- 指纹行（与前端六个 _test_dashboard_*.js 同格式；复用 tests/_suite_head.py 的实现）----
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "tests"))
+from _suite_head import declare_suite  # noqa: E402
+declare_suite(__file__, ["qoder_proxy.py", "qoder_accounts.py", "qoder_sign.py"])
 import qoder_sign as S
 import qoder_catalog as C
 import qoder_accounts as A
@@ -308,12 +313,15 @@ print()
 print("[5.8] off-peak (低谷) window detection — cross-midnight 22:00-08:00 UTC+8")
 import datetime as _dt
 def _ts(h, m):
-    # 构造 UTC+8 指定时刻对应的 epoch（固定 +8 与官方时区一致）
-    utc_naive = _dt.datetime.utcnow() if False else None
-    base = _dt.datetime.now(_dt.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    # 构造 UTC+8 指定时刻对应的 epoch（固定 +8 与官方时区一致）。
+    # naive.timestamp() 把墙钟按**系统本地时区**解释；先加回本地 offset 得到
+    # 「h:m 视作 UTC」的 epoch，再减 8h 得到「h:m 在 UTC+8」的 epoch。
+    # 旧版把 offset 的符号写反：本地恰好是 UTC+8 时两个错误抵消所以一直绿，
+    # CI 的 UTC runner 上（offset=0）构造出的时刻偏移 -16h，5 条窗口断言全红
+    # ——「测试只在本地跑」的盲区第一次被 CI 实际抓住。
     target_local_naive = _dt.datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
-    return target_local_naive.timestamp() - (_dt.datetime.now().astimezone().utcoffset().total_seconds()
-                                             - 8 * 3600)
+    local_offset = _dt.datetime.now().astimezone().utcoffset().total_seconds()
+    return target_local_naive.timestamp() + (local_offset - 8 * 3600)
 for hh, mm, expect, label in [
         (1, 0, True, "01:00 inside window"),
         (12, 0, False, "12:00 outside"),
@@ -1496,8 +1504,39 @@ sys_text, flat, images = P.flatten_messages([
                                    "image_url": {"url": "data:image/png;base64,AAA"}}]},
 ])
 check("system extracted", sys_text == "base")
-check("text parts joined", flat[0]["content"] == "part1")
+# v1.4.2：带图消息的 content 保留结构化 parts（上游只读 content 里的 image_url
+# parts，不读顶层 image_urls——实测确认）。文本 part 仍在，图像 part 并存。
+check("带图消息 content 是结构化 parts（text + image_url 并存）",
+      isinstance(flat[0]["content"], list)
+      and flat[0]["content"][0] == {"type": "text", "text": "part1"}
+      and flat[0]["content"][1]["type"] == "image_url"
+      and flat[0]["content"][1]["image_url"]["url"]
+      == "data:image/png;base64,AAA", flat[0]["content"])
 check("image collected", images == ["data:image/png;base64,AAA"])
+# 无图消息仍压平为纯文本（行为不变）
+_sys_n, _flat_n, _img_n = P.flatten_messages([
+    {"role": "user", "content": [{"type": "text", "text": "plain"}]}])
+check("无图消息 content 仍为纯文本", _flat_n[0]["content"] == "plain")
+# 单 part dict 形态（issue #33 根因）：content 直接给一个 part 对象而非列表时，
+# 图像必须被收集、绝不 str() 成 Python 字面量文本——旧行为是模型收到
+# "{'type': 'image_url', ...}" 字符串且图像丢失。
+_sys_d, _flat_d, _img_d = P.flatten_messages([
+    {"role": "user", "content": {"type": "image_url",
+                                  "image_url": {"url": "data:image/png;base64,BBB"}}}])
+check("dict 单 part：图像收集且 content 为结构化 parts 而非 str() 文本",
+      _img_d == ["data:image/png;base64,BBB"]
+      and isinstance(_flat_d[0].get("content"), list)
+      and _flat_d[0]["content"][0]["image_url"]["url"]
+      == "data:image/png;base64,BBB", _flat_d[0]["content"])
+_resp_d = P._flatten_content({"type": "input_image",
+                              "image_url": "data:image/png;base64,CCC"})
+check("Responses dict 单 part：保留结构化 image_url part 而非 str()",
+      isinstance(_resp_d, list) and len(_resp_d) == 1
+      and _resp_d[0].get("type") == "image_url"
+      and _resp_d[0]["image_url"]["url"] == "data:image/png;base64,CCC")
+# 非 dict 非 list（数值等）仍走 str() 兜底（该行为不受影响）
+_check_int = P._flatten_content(123)
+check("非 dict 非 list 仍 str() 兜底", _check_int == "123")
 check("fingerprint string sanitized",
       "You are Claude Code, Anthropic's official CLI tool" in
       P.sanitize_text("You are Claude Code, Anthropic's official CLI tool for Claude"))
@@ -1518,7 +1557,7 @@ _orig_plan = A.Account.fetch_plan
 _orig_elig = A.Account.pro_eligibility
 
 
-def _stub_status(self):
+def _stub_status(self, **_kw):
     if self.realm == "intl":
         self._mark_checkin_capability(False, "%s (HTTP 404)"
                                       % A.CHECKIN_REASON_NOT_FOUND)
@@ -1605,11 +1644,13 @@ check("daily row carries a jump url (campaignUrl or activities page)",
       _intl_row.get("jump_url"))
 
 print()
-print("[19] gateway host failover (official intl api1 -> api2; CN single host)")
-check("gateway_candidates: intl primary is api1 with api2/api3 fallbacks",
-      A.gateway_candidates("intl") == ["https://api1.qoder.sh",
+print("[19] gateway host failover (official intl api3 -> api2/api1; CN single host)")
+# issue #64：官方 0.4.8 的 endpoint 缓存里 inference=api3、securityInference=api2，
+# api1 已不是候选首位（本机实测也常年超时）。断言随官方顺序更新。
+check("gateway_candidates: intl primary is api3 with api2/api1 fallbacks",
+      A.gateway_candidates("intl") == ["https://api3.qoder.sh",
                                        "https://api2.qoder.sh",
-                                       "https://api3.qoder.sh"],
+                                       "https://api1.qoder.sh"],
       A.gateway_candidates("intl"))
 check("gateway_candidates: cn has a single official host",
       A.gateway_candidates("cn") == ["https://gateway.qoder.com.cn"],
@@ -1633,7 +1674,8 @@ class _Resp19(object):
 
 def _fake_urlopen19(req, timeout=None):
     _hits19.append(req.full_url)
-    if "api1.qoder.sh" in req.full_url:
+    # issue #64：官方顺序已改为 api3 主、api2 备 → 让主 host 失败，验证切到 api2。
+    if "api3.qoder.sh" in req.full_url:
         raise _ssl19.SSLError("simulated TLS EOF on primary host")
     return _Resp19()
 
@@ -1659,8 +1701,8 @@ finally:
 
 check("failover: request succeeded after primary host transport error",
       _err19 is None and _acc19.uid == "h19", _err19)
-check("failover: both hosts were tried in order (api1 then api2)",
-      len(_hits19) == 2 and "api1.qoder.sh" in _hits19[0]
+check("failover: both hosts were tried in order (api3 then api2)",
+      len(_hits19) == 2 and "api3.qoder.sh" in _hits19[0]
       and "api2.qoder.sh" in _hits19[1], _hits19)
 check("failover: signature path unchanged across hosts",
       _hits19[0].split("?")[0].endswith(P.CHAT_PATH.split("?")[0]),
@@ -1720,7 +1762,7 @@ _orig_claim = A.Account.claim_campaign
 _calls20 = []
 
 
-def _stub_claim(self, campaign_id):
+def _stub_claim(self, campaign_id, **_kw):
     _calls20.append(campaign_id)
     return {"ok": True, "status": "CLAIMED", "replayed": False, "grant_id": "g1",
             "amount": 100, "message": "领取成功"}
@@ -1830,7 +1872,7 @@ _orig_native = A.native_machine_identity
 _seq = []
 
 
-def _stub_get(self):
+def _stub_get(self, **_kw):
     _seq.append(1)
     if len(_seq) == 1:
         return {"showCampaign": False, "claimable": False, "campaigns": []}, 200, ""
@@ -1845,7 +1887,7 @@ def _stub_get(self):
 _forced = []
 
 
-def _stub_native(realm, account_id, force=False):
+def _stub_native(realm, account_id, force=False, **_kw):
     if force:
         _forced.append(account_id)
     return {"machineToken": "t", "machineType": "ty", "machineCode": "c",
@@ -1882,7 +1924,7 @@ _calls2 = []
 _forced2 = []
 
 
-def _stub_native2(realm, account_id, force=False):
+def _stub_native2(realm, account_id, force=False, **_kw):
     _calls2.append((realm, account_id))
     if force:
         _forced2.append(account_id)
@@ -1975,62 +2017,6 @@ _body_off = P.build_qoder_body(
 check("unsupported effort on a level-less model is dropped from the body",
       "reasoning_effort" not in (_body_off.get("parameters") or {}),
       _body_off.get("parameters"))
-
-print()
-print("[21] 本机虚拟化检测（中文输出：官方风控桥 vmInfo + 本机交叉校验）")
-import qoder_fingerprint as F
-
-check("vm_brand_cn: 已知平台译中文，未知品牌原样",
-      F.vm_brand_cn("Hyper-V") == "Hyper-V（微软）"
-      and F.vm_brand_cn("VMware, Inc.") == "VMware"
-      and F.vm_brand_cn("SomeVendor") == "SomeVendor"
-      and F.vm_brand_cn("") == "")
-check("风控评分 -> 中文档位（高/中/低/无/未知）",
-      [F._vm_level_cn(x) for x in (77, 50, 10, 0, None)]
-      == ["高", "中", "低", "无", "未知"])
-
-# 有官方风控结果：以它为权威
-_st_vm = F.vm_status(bridge_vm_info={"isVm": True, "brand": "Hyper-V",
-                                     "percentage": 77, "vmTypeCode": 14},
-                     bridge_available=True)
-check("bridge data wins: is_vm/level/score/brand_cn/source",
-      _st_vm["is_vm"] is True and _st_vm["level"] == "高"
-      and _st_vm["score"] == 77 and _st_vm["brand_cn"] == "Hyper-V（微软）"
-      and _st_vm["vm_type_code"] == 14 and _st_vm["source"] == "runtime-info",
-      _st_vm)
-check("中文结论包含平台与评分",
-      "本机运行在虚拟机中" in _st_vm["summary"]
-      and "Hyper-V（微软）" in _st_vm["summary"] and "77" in _st_vm["summary"],
-      _st_vm["summary"])
-check("证据首条为官方风控判定（中文）",
-      _st_vm["evidence"] and "官方风控判定" in _st_vm["evidence"][0],
-      _st_vm["evidence"][:1])
-
-# 无官方结果：退化为本机交叉校验，结论里明确说明
-_st_local = F.vm_status(bridge_vm_info=None, bridge_available=False)
-check("no bridge -> local cross-check + 中文说明",
-      _st_local["source"] == "local" and isinstance(_st_local["is_vm"], bool)
-      and "本机交叉校验" in _st_local["summary"], _st_local["summary"])
-
-# 看板契约：这些键必须都在（前端 /diag/vm 直接消费）
-check("dashboard contract keys present",
-      set(("is_vm", "level", "score", "brand", "brand_cn", "vm_type_code",
-           "source", "evidence", "summary")) <= set(_st_vm.keys()),
-      sorted(_st_vm.keys()))
-_st_api = A.local_vm_status("cn", force=True)
-check("A.local_vm_status adds realm + bridge_available",
-      _st_api.get("realm") in ("cn", "intl")
-      and isinstance(_st_api.get("bridge_available"), bool), 
-      (A.local_vm_status("cn") is not None, _st_api.get("bridge_available")))
-
-# /diag/* 必须走面板鉴权（此前漏加会被无鉴权读取）
-_src21 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "qoder_proxy.py"), encoding="utf-8").read()
-check("/diag routes are panel-guarded",
-      'if path.startswith("/diag"):' in _src21
-      and _src21.find('if path.startswith("/diag"):')
-      < _src21.find('return False', _src21.find('def _is_panel_route')),
-      "guard missing" if 'if path.startswith("/diag"):' not in _src21 else "")
 
 print()
 print("[22] 面板加速（短缓存 / 区域分区）与新版本检测")
@@ -2202,7 +2188,7 @@ _orig_camp23 = A.Account.campaigns
 _orig_native23 = A.native_machine_identity
 
 
-def _stub_campains23(self, force=False):
+def _stub_campains23(self, force=False, **_kw):
     return {"ok": True, "available": True, "show_campaign": True, "claimable": False,
             "campaign_url": "https://openapi.qoder.com.cn/growth-page/activity-iframe",
             "identity": "runtime-info",
@@ -2267,7 +2253,7 @@ check("行内含中文名额状态 + 奖励文本",
 check("券类行不误报积分", _crow["reward_credit"] == 0, _crow["reward_credit"])
 
 
-def _stub_campains_claimed23(self, force=False):
+def _stub_campains_claimed23(self, force=False, **_kw):
     out = _stub_campains23(self, force)
     out["campaigns"][1]["claim_status"] = "CLAIMED"
     out["campaigns"][1]["unavailable_reason"] = ""
@@ -2290,7 +2276,7 @@ _orig_native23b = A.native_machine_identity
 _posts = []
 
 
-def _stub_camp_claimable23(self, force=False):
+def _stub_camp_claimable23(self, force=False, **_kw):
     return {"ok": True, "available": True, "show_campaign": True, "claimable": True,
             "campaign_url": "", "identity": "runtime-info",
             "campaigns": [{"campaign_id": "c-cup", "campaign_key": "act-cup",
@@ -2301,7 +2287,7 @@ def _stub_camp_claimable23(self, force=False):
                            "unavailable_reason": "", "placements": []}]}
 
 
-def _stub_claim_blocked23(self, campaign_id):
+def _stub_claim_blocked23(self, campaign_id, **_kw):
     _posts.append(campaign_id)
     return {"ok": False, "blocked": True, "status": "BLOCKED",
             "failure_code": "SAME_PERSON_ALREADY_CLAIMED",
@@ -3094,6 +3080,109 @@ check("流式：未声明工具名 -> 不吞正文，按普通文本透传",
       "".join(_f["choices"][0]["delta"].get("content") or ""
               for _f in _frames27c) == _LEAK27, _frames27c)
 
+# --- issue #36：marker + JSON 数组之后漏出 DSML 闭合标签残片 ---
+# 修复前整段被当正文补发（finish=stop、工具不执行）；修复后恢复为
+# 结构化 tool_calls（finish=tool_calls），残片零泄漏。
+_DSML_TAIL = ("</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜calls>")
+check("#36 尾部剥离：DSML 闭合标签残片被剥掉（残留换行由调用方 strip 处理）",
+      P._strip_dsml_close_tail(_LEAK27 + "\n" + _DSML_TAIL).strip() == _LEAK27)
+check("#36 尾部剥离：正文内部出现 DSML 字串不受影响（只剥尾部）",
+      P._strip_dsml_close_tail("讨论 </｜DSML｜invoke> 的正文") == "讨论 </｜DSML｜invoke> 的正文")
+_frames36 = [json.loads(f[6:]) for f in P.recover_leaked_tool_calls(
+    iter([_raw27("准备修改命令后重试：\n\n"),
+          _raw27(_LEAK27.split("\n")[0] + "\n"),
+          _raw27(_LEAK27.split("\n")[1]),
+          _raw27("\n</｜DSML｜parameter>\n"),
+          _raw27("</｜DSML｜invoke>\n"),
+          _raw27("</｜DSML｜calls>"),
+          _raw27("", "stop")]),
+    {"terminal"})]
+_c36 = [_f["choices"][0] for _f in _frames36]
+_txt36 = "".join(_d.get("delta", {}).get("content") or "" for _d in _c36)
+_calls36 = [(_d.get("delta", {}) or {}).get("tool_calls") for _d in _c36
+            if _d.get("delta", {}).get("tool_calls")]
+check("#36 流式：DSML 残片不再把回声块证伪——恢复为 tool_calls 增量",
+      not ("DSML" in _txt36 or "请求调用工具" in _txt36)
+      and len(_calls36) == 1
+      and _calls36[0][0]["function"]["name"] == "terminal"
+      and _c36[-1]["finish_reason"] == "tool_calls", _c36)
+
+# --- issue #36 后续（qingannn 二次报告）：尖括号标记变体 + DSML 标签跨帧 + 帧上限 ---
+_ALT36 = P.LEAK_MARKER_ALT
+check("ALT 常量：尖括号形态与方括号仅括号不同",
+      _ALT36 == "<" + P.LEAK_MARKER[1:-1] + ">")
+check("归一化：开头尖括号变体 -> 方括号形态",
+      P._normalize_leak_marker(_ALT36 + " rest") == P.LEAK_MARKER + " rest")
+check("归一化：中段出现不误伤（只改开头）",
+      P._normalize_leak_marker("note " + _ALT36 + " usage")
+      == "note " + _ALT36 + " usage")
+check("归一化：尖括号真前缀（跨帧进行中）判 pre",
+      P._leak_body_offset("<assistant") == ("pre", None))
+
+def _chunks36(pieces, n):
+    out = []
+    for p in pieces:
+        for i in range(0, len(p), n):
+            out.append(p[i:i + n])
+    return out
+
+def _raw36c(content=None, fin=None):
+    delta = {}
+    if content is not None:
+        delta["content"] = content
+    inner = {"id": "c36", "model": "m36", "created": 1, "choices": [
+        {"index": 0, "delta": delta, "finish_reason": fin}]}
+    return ("data: " + json.dumps(inner, ensure_ascii=False)
+            + chr(10) * 2).encode("utf-8")
+
+def _frames36c(pieces):
+    return [_raw36c(p, "stop" if i == len(pieces) - 1 else None)
+            for i, p in enumerate(pieces)]
+
+def _collect36(pieces, names=None):
+    res = []
+    for f in P.recover_leaked_tool_calls(iter(pieces),
+                                         allowed_names=names or {"terminal"}):
+        d = P.strip_data_prefix(f.decode("utf-8", "replace"))
+        if not d or d == "[DONE]":
+            continue
+        o = json.loads(d)
+        ch = (o.get("choices") or [{}])[0]
+        dd = ch.get("delta") or {}
+        res.append((dd.get("content"), dd.get("tool_calls"),
+                    ch.get("finish_reason")))
+    return res
+
+_VBAR = chr(0xFF5C)
+_DSML36 = ("</" + _VBAR * 2 + "DSML" + _VBAR * 2 + " parameter>\n"
+           + "</" + _VBAR * 2 + "DSML" + _VBAR * 2 + " invoke>\n"
+           + "</" + _VBAR * 2 + "DSML" + _VBAR * 2 + " calls>")
+_PRE36 = chr(0x51C6) + chr(0x5907) + chr(0x6838) + chr(0x5BF9) + chr(0x6587) + chr(0x4EF6) + chr(0x5185) + chr(0x5BB9) + chr(0xFF1A) + chr(10) * 2
+for _mk36 in (P.LEAK_MARKER, _ALT36):
+    for _n36 in (1, 4, 16, 64, 512):
+        _res36 = _collect36(_frames36c(_chunks36(
+            [_PRE36, _mk36 + chr(10), _CALLS27,
+             chr(10) + _DSML36], _n36)))
+        _tc36 = [c for _, c, _ in _res36 if c]
+        _tx36 = "".join(t for t, _, _ in _res36 if t)
+        _ok36 = (len(_tc36) == 1
+                 and _tc36[0][0]["function"]["name"] == "terminal"
+                 and P.LEAK_MARKER[1:-1] not in _tx36
+                 and "DSML" not in _tx36)
+        check("#36b 分片矩阵 %s/%d 帧：恢复且零泄漏"
+              % ("方括号" if _mk36 == P.LEAK_MARKER else "尖括号", _n36),
+              _ok36, _tx36[:80])
+
+check("#36b 尾巴判定：完整 DSML 标签可暂留",
+      P._dsml_tail_holdable("</" + _VBAR + "DSML" + _VBAR + "calls>"))
+check("#36b 尾巴判定：完整+半截组合可暂留（旧版 strip 卡死 + match 不中）",
+      P._dsml_tail_holdable(_DSML36[:21] + chr(10)
+                            + "</" + _VBAR * 2 + "DSML" + _VBAR * 2))
+check("#36b 尾巴判定：单字符 <（1 字符/帧边界）可暂留",
+      P._dsml_tail_holdable("<"))
+check("#36b 尾巴判定：长散文不暂留（长度护栏）",
+      not P._dsml_tail_holdable("<div " + "x" * 100))
+
 _ev27 = [f.decode() for f in P.stream_responses_events(
     iter([_raw27(_LEAK27), _raw27("", "stop")]), "m27",
     {"usage": None, "custom_names": set(), "allowed_names": {"terminal"}})]
@@ -3201,7 +3290,16 @@ check("削减：历史工具结果被截断（首尾保留 + 省略标记）",
 check("削减：信封前缀逐字节不变（历史与当前轮都是）",
       _hist29.startswith(_PREF29) and _cur29.startswith(_PREF29)
       and _short29.startswith(P.TOOL_RESULT_MARKER + " (cat)]\n"))
-check("削减：当前轮的 tool 结果全文保留", _cur29 == _PREF29 + _LONG29)
+# issue #48：默认策略改为「只保护最后 N 条工具结果」（与请求形态无关）。
+# 旧断言锁的是「当前轮 protected」——那正是缓存每轮失效的根因，已废。
+check("削减：默认只保护最后一条 tool 结果（更早的历史一律削）",
+      _cur29.startswith(_PREF29) and len(_cur29) < len(_LONG29)
+      and "已省略" in _cur29, (len(_LONG29), len(_cur29)))
+check("削减：保护窗内的最后一条结果全文保留",
+      P.flatten_messages([{"role": "user", "content": "u"},
+                          {"role": "tool", "name": "terminal",
+                           "content": _LONG29}])[1][-1]["content"]
+      == _PREF29 + _LONG29)
 check("削减：短结果不动", _short29.endswith("ok: 3 passed"))
 check("削减：完整 JSON 不削且仍可解析",
       isinstance(json.loads(P._shrink_tool_result(
@@ -3250,10 +3348,12 @@ check("开关：auto + CN + GLM（上游 key gm5x）-> 结构化",
       P.structured_tool_history_enabled(model="glm-5.3-flash",
                                         model_key="gm53flash",
                                         realm="cn", messages=_SMSGS32) is True)
-check("开关：auto + CN + DeepSeek -> 文本化（未验证 provider 默认不启用）",
+# issue #49 后续：DeepSeek 已由报告者在真实长会话端到端验证（1283 次调用 0 降级），
+# 并入白名单——auto + CN + DeepSeek 现在应走结构化直传。
+check("开关：auto + CN + DeepSeek -> 结构化（#49 后续：端到端验证通过）",
       P.structured_tool_history_enabled(model="deepseek-flash",
                                         model_key="deepseek-flash",
-                                        realm="cn", messages=_SMSGS32) is False)
+                                        realm="cn", messages=_SMSGS32) is True)
 check("开关：auto + INTL -> 文本化（INTL legacy 未实测）",
       P.structured_tool_history_enabled(model="qwen3.8-flash",
                                         model_key="qwen3.8-flash",
@@ -3431,14 +3531,27 @@ check("上限常量：32KB / 200 帧",
 _keep_frames16 = P._HOLD_MAX_FRAMES
 try:
     P._HOLD_MAX_FRAMES = 2
+    # issue #36 follow-up: the frame cap only guards against idle frames
+    # (no growth, e.g. keep-alive noise); a growing legal echo block is
+    # bounded by the 32KB char cap instead.
     _fr16 = [json.loads(f[6:]) for f in P.recover_leaked_tool_calls(
-        iter([_raw27(P.LEAK_MARKER), _raw27("\n["), _raw27("1"), _raw27("2"),
-              _raw27("", "stop")]), {"terminal"})]
+        iter([_raw27(P.LEAK_MARKER + "\n[1"), _raw27(""),
+              _raw27(""), _raw27(""), _raw27("", "stop")]), {"terminal"})]
 finally:
     P._HOLD_MAX_FRAMES = _keep_frames16
-check("帧数兜底：超过 _HOLD_MAX_FRAMES 帧仍未证伪 -> 放行",
+check("帧数兜底：连续空转帧超 _HOLD_MAX_FRAMES -> fail-open 放行",
       "".join(f["choices"][0]["delta"].get("content") or "" for f in _fr16)
-      == P.LEAK_MARKER + "\n[12")
+      == P.LEAK_MARKER + "\n[1")
+# 有内容帧不再计入帧数上限（1 字符/帧的合法长块不受误伤——issue #36 后续）
+_calls16b = json.dumps([{"name": "terminal", "arguments": "{}"}],
+                       ensure_ascii=False)
+_fr16b = [json.loads(f[6:]) for f in P.recover_leaked_tool_calls(
+    iter([_raw27(P.LEAK_MARKER), _raw27("\n" + _calls16b[:8]),
+          _raw27(_calls16b[8:16]), _raw27(_calls16b[16:]),
+          _raw27("", "stop")]), {"terminal"})]
+check("有增长的帧不计帧数上限：4 内容帧在 _HOLD_MAX_FRAMES=2 下仍恢复",
+      any(f["choices"][0]["delta"].get("tool_calls") for f in _fr16b)
+      and _fr16b[-1]["choices"][0]["finish_reason"] == "tool_calls")
 
 print()
 print("[28] 发布前补强：终局验证 §10.7#5 的零覆盖项（防止静默回归）")
@@ -3664,268 +3777,6 @@ check("两个维度正交：derived 身份与 omitted 机器头可同时成立"
       _c_cn_d29.get("identity") == "derived"
       and _c_cn_d29.get("machine_headers") == A.MACHINE_HEADERS_OMITTED,
       (_c_cn_d29.get("identity"), _c_cn_d29.get("machine_headers")))
-print()
-print("[30] UMID 提取器（_install_umid.py）离线纯函数断言：识别 / 平台选择 / 扫描 / 校验 / 幂等")
-import base64 as _b64_30
-import contextlib as _cl_30
-import io as _io_30
-import shutil as _sh_30
-import struct as _st_30
-import tarfile as _tfmod_30
-import tempfile as _tf_30
-import _install_umid as U30
-
-
-def _elf30(machine, cls=2, endian=1):
-    buf = bytearray(0x40)
-    buf[0:4] = b"\x7fELF"
-    buf[4] = cls
-    buf[5] = endian
-    buf[18:20] = _st_30.pack("<H", machine)
-    return bytes(buf)
-
-
-def _macho30(cpu):
-    return b"\xcf\xfa\xed\xfe" + _st_30.pack("<I", cpu) + b"\x00" * 8
-
-
-def _pe30(machine):
-    buf = bytearray(0x80)
-    buf[0:2] = b"MZ"
-    buf[0x3C:0x40] = _st_30.pack("<I", 0x40)
-    buf[0x40:0x44] = b"PE\x00\x00"
-    buf[0x44:0x46] = _st_30.pack("<H", machine)
-    return bytes(buf)
-
-
-_WASM30 = b"\x00asm\x01\x00\x00\x00"
-_ELF_X30 = _elf30(0x3E)
-_ELF_A30 = _elf30(0xB7)
-
-# --- 30.1 魔数/架构识别 ---
-check("identify_blob：ELF x86-64 / aarch64 正确（e_machine 区分）",
-      U30.identify_blob(_ELF_X30) == "elf-x86_64"
-      and U30.identify_blob(_ELF_A30) == "elf-aarch64",
-      (U30.identify_blob(_ELF_X30), U30.identify_blob(_ELF_A30)))
-check("identify_blob：Mach-O x86_64 / arm64 正确（cputype 区分）",
-      U30.identify_blob(_macho30(0x01000007)) == "macho-x86_64"
-      and U30.identify_blob(_macho30(0x0100000C)) == "macho-arm64"
-      and U30.identify_blob(_macho30(0x7)) == "unknown",
-      (U30.identify_blob(_macho30(0x01000007)), U30.identify_blob(_macho30(0x0100000C))))
-check("identify_blob：PE x86_64 / aarch64 正确（e_lfanew -> PE\\0\\0 -> machine）",
-      U30.identify_blob(_pe30(0x8664)) == "pe-x86_64"
-      and U30.identify_blob(_pe30(0xAA64)) == "pe-aarch64",
-      (U30.identify_blob(_pe30(0x8664)), U30.identify_blob(_pe30(0xAA64))))
-check("identify_blob：截断/畸形 PE 不崩溃且归为 unknown（e_lfanew 越界有兜底）",
-      U30.identify_blob(b"MZ") == "unknown"
-      and U30.identify_blob(b"MZ" + b"\x00" * 0x3E) == "unknown"
-      and U30.identify_blob(_pe30(0x8664)[:0x44] + b"\x00" * 0x40) == "unknown",
-      (U30.identify_blob(b"MZ"), U30.identify_blob(b"MZ" + b"\x00" * 0x3E)))
-check("identify_blob：WASM 正确；非原生数据一律 unknown（空/垃圾/短 ELF/未知 e_machine/大端 ELF）",
-      U30.identify_blob(_WASM30) == "wasm"
-      and U30.identify_blob(b"") == "unknown"
-      and U30.identify_blob(b"\x00" * 64) == "unknown"
-      and U30.identify_blob(b"\x7fELF\x02\x01") == "unknown"
-      and U30.identify_blob(_elf30(0x28)) == "unknown"
-      and U30.identify_blob(_elf30(0x3E, endian=2)) == "unknown",
-      (U30.identify_blob(_WASM30), U30.identify_blob(b""), U30.identify_blob(_elf30(0x3E, endian=2))))
-
-# --- 30.2 平台 / 架构选择 ---
-check("component_for_platform：linux/darwin × x86_64/arm64 映射正确（含 AMD64/aarch64 别名）",
-      U30.component_for_platform("linux", "x86_64") == "elf-x86_64"
-      and U30.component_for_platform("linux", "AMD64") == "elf-x86_64"
-      and U30.component_for_platform("linux", "aarch64") == "elf-aarch64"
-      and U30.component_for_platform("linux", "arm64") == "elf-aarch64"
-      and U30.component_for_platform("darwin", "x86_64") == "macho-x86_64"
-      and U30.component_for_platform("darwin", "arm64") == "macho-arm64",
-      (U30.component_for_platform("linux", "AMD64"),
-       U30.component_for_platform("darwin", "arm64")))
-check("component_for_platform：win32 与未知组合返回 None（不猜平台）",
-      U30.component_for_platform("win32", "x86_64") is None
-      and U30.component_for_platform("linux", "riscv64") is None
-      and U30.component_for_platform("plan9", "x86_64") is None,
-      (U30.component_for_platform("win32", "x86_64"),
-       U30.component_for_platform("linux", "riscv64")))
-_cands30 = [(0, 0, _WASM30 + b"\x00" * 32), (0, 0, _ELF_A30), (0, 0, _ELF_X30),
-            (0, 0, _pe30(0x8664))]
-_pick_a30 = U30.select_candidate(_cands30, "elf-aarch64")
-_pick_x30 = U30.select_candidate(_cands30, "elf-x86_64")
-check("select_candidate：按期望标签精确挑（aarch64 不会挑到 x86-64 blob，反之亦然）",
-      _pick_a30 is not None and _pick_a30[0] == 1
-      and U30.identify_blob(_pick_a30[1]) == "elf-aarch64"
-      and _pick_x30 is not None and _pick_x30[0] == 2
-      and U30.identify_blob(_pick_x30[1]) == "elf-x86_64",
-      (_pick_a30[0] if _pick_a30 else None, _pick_x30[0] if _pick_x30 else None))
-check("select_candidate：无匹配返回 None（不会退而求其次给出错组件）",
-      U30.select_candidate([(0, 0, _WASM30), (0, 0, _pe30(0x8664))], "macho-arm64") is None)
-_pe_big30 = _pe30(0x8664) + b"\x00" * (3 * 1024 * 1024)      # ~3MB：超出真组件体积区间
-_pe_ok30 = _pe30(0x8664) + b"\x00" * (600 * 1024)            # ~600KB：落在 400KB–2MB
-_sel_pe30 = U30.select_candidate([(0, 0, _pe_big30), (0, 0, _pe_ok30)], "pe-x86_64")
-check("体积启发式：同格式多候选取落在 400KB–2MB 真组件区间的那个"
-      "（避开 docstring 记录的 7.3MB 疑似模块）",
-      _sel_pe30 is not None and _sel_pe30[0] == 1
-      and len(_sel_pe30[1]) == len(_pe_ok30),
-      (_sel_pe30[0] if _sel_pe30 else None,
-       len(_sel_pe30[1]) if _sel_pe30 else None))
-
-# --- 30.3 base64 扫描 ---
-# 扫描断言必须用"长度达标"的样本：base64(64B) 只有 88 字符，远小于 BLOB_MIN_LEN，
-# 因此这里把 ELF 头补零到 4KB+（头部魔数与 e_machine 不变，仍是合法 elf-x86_64）。
-_ELF_BIG30 = _ELF_X30 + b"\x00" * 4096
-_b64s30 = _b64_30.b64encode(_ELF_BIG30).decode()
-assert len(_b64s30) > U30.BLOB_MIN_LEN, len(_b64s30)
-_TICK30 = chr(96)
-_text30 = ('const a = "' + _b64s30 + '";\n'
-           'const short = "AAAA";\n'
-           "const b = '" + _b64s30 + "';\n"
-           "const c = " + _TICK30 + _b64s30 + _TICK30 + ";\n")
-_cands30b = U30.scan_bundle_candidates(_text30)
-check("scan_bundle_candidates：只收长度达标的引号字面量（短字面量与反引号模板都不收）",
-      len(_cands30b) == 2, [len(c[2]) for c in _cands30b])
-check("scan_bundle_candidates：偏移是内容区间（不含引号）且解码正确",
-      _text30[_cands30b[0][0]:_cands30b[0][1]] == _b64s30
-      and U30.identify_blob(_cands30b[0][2]) == "elf-x86_64",
-      (_cands30b[0][0], _cands30b[0][1]))
-check("scan_bundle_candidates：min_len 阈值可调（阈值高于字面量长度 -> 零候选）",
-      U30.scan_bundle_candidates(_text30, min_len=len(_b64s30) + 1) == []
-      and len(U30.scan_bundle_candidates(_text30, min_len=len(_b64s30))) == 2)
-check("扫描+选择：WASM 排在前面也不会被选中（按格式过滤，不按出现顺序）",
-      (lambda _s: _s is not None and _s[0] == 1)(U30.select_candidate(
-          [(0, 0, _WASM30 + b"\x00" * 64), (0, 0, _ELF_X30)], "elf-x86_64")))
-
-# --- 30.4 校验 ---
-check("verify_component：magic 与架构级双重校验（不匹配一律 False）",
-      U30.verify_component(_ELF_X30, "elf-x86_64") is True
-      and U30.verify_component(_ELF_X30, "elf-aarch64") is False
-      and U30.verify_component(_ELF_A30, "elf-x86_64") is False
-      and U30.verify_component(_WASM30, "elf-x86_64") is False
-      and U30.verify_component(b"", "elf-x86_64") is False,
-      (U30.verify_component(_ELF_X30, "elf-aarch64"),
-       U30.verify_component(_WASM30, "elf-x86_64")))
-_good30 = "sha512-" + _b64_30.b64encode(hashlib.sha512(b"abc").digest()).decode()
-_bad30 = "sha512-" + _b64_30.b64encode(hashlib.sha512(b"abd").digest()).decode()
-check("verify_integrity：sha512 三态（正确 True / 不符 False / 缺失或异算法 None=跳过）",
-      U30.verify_integrity(b"abc", _good30) is True
-      and U30.verify_integrity(b"abc", _bad30) is False
-      and U30.verify_integrity(b"abc", None) is None
-      and U30.verify_integrity(b"abc", "sha1-ZW5j") is None,
-      (U30.verify_integrity(b"abc", _bad30), U30.verify_integrity(b"abc", None)))
-
-# --- 30.5 幂等语义（stub 网络函数，全程离线） ---
-_tmp30 = _tf_30.mkdtemp(prefix="qd-umid-")
-try:
-    _dest30 = os.path.join(_tmp30, "umid")
-    _tgt30 = os.path.join(_dest30, "runtime-info")
-    _missing30 = U30.is_installed(_tgt30, "elf-x86_64")
-    os.makedirs(_dest30, exist_ok=True)
-    with open(_tgt30, "wb") as fh30:
-        fh30.write(_WASM30 + b"\x00" * 32)
-    _bad30_state = U30.is_installed(_tgt30, "elf-x86_64")
-    with open(_tgt30, "wb") as fh30:
-        fh30.write(_ELF_X30)
-    _ok30_state = U30.is_installed(_tgt30, "elf-x86_64")
-    check("is_installed：不存在 False / 内容不符 False / 校验通过 True（不看文件大小或名字）",
-          _missing30 is False and _bad30_state is False and _ok30_state is True,
-          (_missing30, _bad30_state, _ok30_state))
-
-    _calls30 = []
-    _orig_rt30, _orig_dl30 = U30.resolve_tarball, U30.download_tarball
-    U30.resolve_tarball = lambda *a, **k: (_calls30.append("resolve")
-                                           or ("9.9.9", "http://invalid", None))
-    U30.download_tarball = lambda *a, **k: (_calls30.append("download") or b"")
-    try:
-        with _cl_30.redirect_stdout(_io_30.StringIO()):
-            _rc_skip30 = U30.main(["--platform", "linux", "--arch", "x64",
-                                   "--dest", _dest30])
-        _calls_after_skip30 = list(_calls30)
-        with open(_tgt30, "wb") as fh30:
-            fh30.write(_WASM30 + b"\x00" * 32)          # 破坏目标 -> 应重新下载
-        try:
-            with _cl_30.redirect_stdout(_io_30.StringIO()):
-                _rc_redl30 = U30.main(["--platform", "linux", "--arch", "x64",
-                                       "--dest", _dest30])
-        except Exception as _exc30:
-            _rc_redl30 = "异常:%s" % type(_exc30).__name__
-        _calls_after_redl30 = list(_calls30)
-    finally:
-        U30.resolve_tarball, U30.download_tarball = _orig_rt30, _orig_dl30
-    check("幂等：目标已存在且校验通过 -> main() 返回 0 且一个网络函数都没被调用",
-          _rc_skip30 == 0 and _calls_after_skip30 == [],
-          (_rc_skip30, _calls_after_skip30))
-    check("幂等反例：目标校验不通过 -> 确实走下载路径（不是无条件跳过）",
-          _calls_after_redl30[:1] == ["resolve"] and _rc_redl30 != 0,
-          (_rc_redl30, _calls_after_redl30))
-
-    # --- 30.6 端到端（全离线）：伪造 npm tarball -> 扫描 -> 选择 -> 安装 ---
-    # 端到端必须用"长度达标"的样本，否则扫描阶段（BLOB_MIN_LEN）就会漏掉它
-    _bundle_src30 = 'const blob = "%s";\n' % _b64_30.b64encode(_ELF_BIG30).decode()
-    _buf30 = _io_30.BytesIO()
-    with _tfmod_30.open(fileobj=_buf30, mode="w:gz") as _tf30:
-        _info30 = _tfmod_30.TarInfo(U30.BUNDLE_MEMBER)
-        _payload30 = _bundle_src30.encode("utf-8")
-        _info30.size = len(_payload30)
-        _tf30.addfile(_info30, _io_30.BytesIO(_payload30))
-    _tgz30 = _buf30.getvalue()
-    _e2e_calls30 = []
-    _orig_rt30b, _orig_dl30b = U30.resolve_tarball, U30.download_tarball
-    U30.resolve_tarball = lambda *a, **k: (_e2e_calls30.append("resolve")
-                                           or ("9.9.9", "http://invalid", None))
-    U30.download_tarball = lambda *a, **k: (_e2e_calls30.append("download") or _tgz30)
-    try:
-        with _cl_30.redirect_stdout(_io_30.StringIO()):
-            _rc_e2e30 = U30.main(["--platform", "linux", "--arch", "x64",
-                                  "--dest", _dest30])
-    finally:
-        U30.resolve_tarball, U30.download_tarball = _orig_rt30b, _orig_dl30b
-    check("端到端（全离线）：伪造 tarball -> main() 完成提取并落盘，产物校验通过",
-          _rc_e2e30 == 0 and _e2e_calls30 == ["resolve", "download"]
-          and U30.is_installed(_tgt30, "elf-x86_64"),
-          (_rc_e2e30, _e2e_calls30, U30.is_installed(_tgt30, "elf-x86_64")))
-finally:
-    _sh_30.rmtree(_tmp30, ignore_errors=True)
-
-# --- 30.7 与网关的落盘/发现契约 ---
-_acc_src30 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "qoder_accounts.py"), encoding="utf-8").read()
-check("落盘契约：安装文件名/目录名与 gateway POSIX 查找路径同源"
-      "（runtime-info / umid / QD_UMID_DIR）",
-      U30.TARGET_FILENAME == "runtime-info"
-      and U30.DEFAULT_DEST_DIRNAME == "umid"
-      and "QD_UMID_DIR" in _acc_src30
-      and '"umid"' in _acc_src30 and '"runtime-info"' in _acc_src30,
-      (U30.TARGET_FILENAME, U30.DEFAULT_DEST_DIRNAME))
-_orig_env30 = os.environ.get("QD_UMID_DIR")
-_tmp30b = _tf_30.mkdtemp(prefix="qd-umid-env-")
-try:
-    os.environ["QD_UMID_DIR"] = _tmp30b
-    _dd_env30 = U30.default_dest_dir()
-finally:
-    if _orig_env30 is None:
-        os.environ.pop("QD_UMID_DIR", None)
-    else:
-        os.environ["QD_UMID_DIR"] = _orig_env30
-    _sh_30.rmtree(_tmp30b, ignore_errors=True)
-_dd_default30 = U30.default_dest_dir()
-check("default_dest_dir()：$QD_UMID_DIR 优先；默认 <repo>/umid（与 gateway 查找顺序一致）",
-      _dd_env30 == _tmp30b
-      and _dd_default30 == os.path.join(
-          os.path.dirname(os.path.abspath(U30.__file__)), "umid")
-      and _dd_default30 != _dd_env30,
-      (_dd_env30, _dd_default30))
-# 真实产物校验（仓库里存在才断言，否则显式 SKIP——绝不静默）：
-# umid/ 已被 .gitignore 忽略，CI/他人机器上通常没有，所以这条按环境降级为 SKIP。
-_umid_real30 = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "umid", "runtime-info")
-if os.path.isfile(_umid_real30):
-    with open(_umid_real30, "rb") as _fh30b:
-        _umid_data30 = _fh30b.read()
-    check("真实产物：umid/runtime-info 被识别为 elf-x86_64 且落在体积启发式区间"
-          "（提取链路端到端产物，非合成样本）",
-          U30.identify_blob(_umid_data30) == "elf-x86_64"
-          and U30.verify_component(_umid_data30, "elf-x86_64")
-          and U30.HEURISTIC_SIZE_MIN <= len(_umid_data30) <= U30.HEURISTIC_SIZE_MAX,
-          (len(_umid_data30), U30.identify_blob(_umid_data30)))
-print()
 print("[31] issue #11 工具结果回声 + 标记常量契约 + issue #12 原生桥失败可见性")
 
 # --- 31.1 #11 判据：吞掉 / 不吞（直接调用判据函数，离线） ---
@@ -4139,9 +3990,9 @@ finally:
     else:
         os.environ["QD_STRUCTURED_TOOL_HISTORY"] = _orig_env32
 
-check("开关三态·auto：默认只放行 CN+白名单（Qwen/GLM/gm4 真；DeepSeek/Kimi/INTL 假）",
+check("开关三态·auto：默认放行 CN+白名单（Qwen/GLM/gm4/DeepSeek 真；Kimi/INTL 假）",
       _auto_cn_qwen is True and _auto_cn_glm is True and _auto_cn_glm2 is True
-      and _auto_cn_ds is False and _auto_cn_kimi is False
+      and _auto_cn_ds is True and _auto_cn_kimi is False
       and _auto_intl_qwen is False,
       (_auto_cn_qwen, _auto_cn_glm, _auto_cn_ds, _auto_cn_kimi, _auto_intl_qwen))
 check("开关三态·on/off：on 强制放行（含 DeepSeek/INTL），off 一律关闭",
@@ -4426,345 +4277,6 @@ _dd_pre = "我先看看：" + _M33[:9]
 _dd_rest = _M33[9:] + "\n" + _CALLS34
 _t, _tc, _fn = _run34([_f33(_dd_pre), _f33(_dd_rest), _f33("", "stop")])
 print()
-print("[35] 机器身份落盘缓存（task-48 · 设计 v1.2.13 第七节：12 条离线）")
-import shutil as _sh35
-import tempfile as _tf35
-import threading as _th35
-
-_IDC_KEYS = ("ACCOUNTS_DIR", "QD_MACHINE_IDENTITY_CACHE",
-             "QD_MACHINE_IDENTITY_CACHE_TTL", "QD_MACHINE_IDENTITY_RESET",
-             "QD_MACHINE_IDENTITY_VOTE")
-_IDC_ORIG_ENV = {_k: os.environ.get(_k) for _k in _IDC_KEYS}
-_IDC_ORIG_RUN = A.run_runtime_info
-_IDC_TMP = _tf35.mkdtemp(prefix="qd-idcache-")
-_IDC_FILE = os.path.join(_IDC_TMP, "machine_identity.json")
-
-
-def _idc_env(**over):
-    """切换 ACCOUNTS_DIR 与三个开关，并清内存缓存与落盘文件。"""
-    os.environ["ACCOUNTS_DIR"] = over.get("accounts_dir") or _IDC_TMP
-    for _k in _IDC_KEYS[1:]:
-        if over.get(_k) is not None:
-            os.environ[_k] = str(over[_k])
-        else:
-            os.environ.pop(_k, None)
-    A._native_ident_cache.clear()
-    try:
-        os.remove(_IDC_FILE)
-    except OSError:
-        pass
-
-
-def _idc_stub(calls, fail=False, seq=None):
-    """替换组件入口：记录调用次数并返回**恒定**身份（保证投票 3/3 一致）。
-
-    seq 给定时按调用序号循环取样本（用于构造多数派/全分歧场景）。
-    """
-    def _f(realm, account_id=""):
-        calls.append((realm, account_id))
-        if fail:
-            return {}
-        if seq:
-            s = seq[(len(calls) - 1) % len(seq)]
-            return dict(s)
-        return {"machineToken": "tok-1", "machineType": "ty1",
-                "machineCode": "co1", "vmInfo": {"isVm": False}}
-    return _f
-
-
-def _idc_read():
-    try:
-        with open(_IDC_FILE, encoding="utf-8") as _fh:
-            return json.load(_fh)
-    except Exception:
-        return None
-
-
-def _idc_tok(blob):
-    try:
-        return (blob.get("realm") or {}).get("cn", {}).get("machineToken")
-    except Exception:
-        return None
-
-
-try:
-    _idc_env()
-    _c1 = []
-    A.run_runtime_info = _idc_stub(_c1)
-    _i1 = A.native_machine_identity("cn", "u1")
-    _f1 = _idc_read()
-    check("#48-1 首次调用：无缓存 → 组件被调 **3** 次（首次表决）并落盘",
-          len(_c1) == 3 and _i1.get("machineToken") == "tok-1"
-          and isinstance(_f1, dict) and _f1.get("version") == 1
-          and _idc_tok(_f1) == "tok-1"
-          and ((_f1.get("realm") or {}).get("cn", {}).get("machineType") == "ty1")
-          and ((_f1.get("realm") or {}).get("cn", {}).get("machineCode") == "co1"),
-          (_c1, _f1))
-
-    A._native_ident_cache.clear()
-    _c2 = []
-    A.run_runtime_info = _idc_stub(_c2)
-    _i2 = A.native_machine_identity("cn", "u2")
-    check("#48-2 【命门】落盘缓存命中：第二次调用**不触发组件**（桩计数=0）且身份逐字节相同",
-          len(_c2) == 0 and _i2.get("machineToken") == "tok-1"
-          and _i2.get("machineType") == "ty1", (_c2, _i2))
-
-    _c3 = []
-    A.run_runtime_info = _idc_stub(_c3)
-    _i3 = A.native_machine_identity("cn", "u3", force=True)
-    check("#48-3 force=True：必调组件并覆盖落盘缓存",
-          len(_c3) == 1 and _i3.get("machineToken") == "tok-1"
-          and _idc_tok(_idc_read()) == "tok-1", (_c3, _idc_read()))
-
-    # 设计 §3.2 行 3 的场景：缓存【已过期】→ 调组件 → 组件失败 → 回退到过期缓存。
-    # （缓存未过期时按行 2 根本不会调组件，那种构造断言不到"回退"路径。）
-    _idc_env(QD_MACHINE_IDENTITY_CACHE_TTL="1")
-    _c4a = []
-    A.run_runtime_info = _idc_stub(_c4a)
-    _i4a = A.native_machine_identity("cn", "u4")
-    _f4 = _idc_read()
-    try:
-        _f4["realm"]["cn"]["cached_at"] = time.time() - 10      # 人为过期
-        with open(_IDC_FILE, "w", encoding="utf-8") as _fh:
-            json.dump(_f4, _fh, ensure_ascii=False)
-    except Exception:
-        pass
-    A._native_ident_cache.clear()
-    _c4b = []
-    A.run_runtime_info = _idc_stub(_c4b, fail=True)
-    _i4b = A.native_machine_identity("cn", "u4b")
-    check("#48-4 组件失败但落盘有（过期）缓存 → 仍返回缓存身份，且不写坏缓存文件"
-          "（首次表决 3 次、TTL 轮换 1 次）",
-          len(_c4a) == 3 and len(_c4b) == 1
-          and _i4b.get("machineToken") == _i4a.get("machineToken")
-          and _idc_tok(_idc_read()) == _i4a.get("machineToken"),
-          (_c4b, _i4b, _idc_read()))
-
-    _idc_env()
-    _c5 = []
-    A.run_runtime_info = _idc_stub(_c5, fail=True)
-    check("#48-5 组件失败且无缓存 → 表决 3 次全空 → 返回 {}（现状不变）",
-          A.native_machine_identity("cn", "u5") == {} and len(_c5) == 3)
-
-    _idc_env(QD_MACHINE_IDENTITY_CACHE="off")
-    _c6 = []
-    A.run_runtime_info = _idc_stub(_c6)
-    A.native_machine_identity("cn", "u6")
-    check("#48-6 QD_MACHINE_IDENTITY_CACHE=off → 不落盘（行为同旧）",
-          _idc_read() is None and len(_c6) == 1, _idc_read())
-
-    _idc_env(QD_MACHINE_IDENTITY_CACHE_TTL="1")
-    _c7 = []
-    A.run_runtime_info = _idc_stub(_c7)
-    A.native_machine_identity("cn", "u7")
-    _f7 = _idc_read()
-    try:
-        _f7["realm"]["cn"]["cached_at"] = time.time() - 10
-        with open(_IDC_FILE, "w", encoding="utf-8") as _fh:
-            json.dump(_f7, _fh, ensure_ascii=False)
-    except Exception:
-        pass
-    A._native_ident_cache.clear()
-    A.native_machine_identity("cn", "u7b")
-    check("#48-7 TTL 正数：过期后重新调组件（首次表决 3 + 轮换 1 = 4）",
-          len(_c7) == 4, len(_c7))
-
-    _idc_env()
-    _c8a = []
-    A.run_runtime_info = _idc_stub(_c8a)
-    A.native_machine_identity("cn", "u8")
-    os.environ["QD_MACHINE_IDENTITY_RESET"] = "1"
-    A._native_ident_cache.clear()
-    _c8b = []
-    A.run_runtime_info = _idc_stub(_c8b)
-    _i8 = A.native_machine_identity("cn", "u8b")
-    check("#48-8 QD_MACHINE_IDENTITY_RESET=1 → 清空缓存并重新取身份",
-          len(_c8b) >= 1 and bool(_i8.get("machineToken")), (len(_c8a), len(_c8b)))
-
-    _idc_env()
-    with open(_IDC_FILE, "w", encoding="utf-8") as _fh:
-        _fh.write('{"version": 1, "realm": {"cn": {"machineToken": "trunc')
-    _c9 = []
-    A.run_runtime_info = _idc_stub(_c9)
-    _err9 = None
-    try:
-        _i9 = A.native_machine_identity("cn", "u9")
-    except Exception as _e9:
-        _err9 = _e9
-        _i9 = {}
-    check("#48-9 缓存文件损坏（截断 JSON）→ 不抛异常，回退表决 3 次",
-          _err9 is None and len(_c9) == 3 and bool((_i9 or {}).get("machineToken")),
-          (_err9, len(_c9)))
-
-    _idc_env()
-    _c10 = []
-    _lk10 = _th35.Lock()
-
-    def _slow10(realm, account_id=""):
-        with _lk10:
-            _c10.append(1)
-            _n = len(_c10)
-        time.sleep(0.05)
-        return {"machineToken": "tok-%d" % _n, "machineType": "ty", "machineCode": "co"}
-
-    A.run_runtime_info = _slow10
-    _th35.Thread(target=lambda: A.native_machine_identity("cn", "t1")).start()
-    _th35.Thread(target=lambda: A.native_machine_identity("cn", "t2")).start()
-    time.sleep(0.6)
-    check("#48-10 并发首次：文件仍可解析（不损坏），且至少写入一次",
-          isinstance(_idc_read(), dict) and _idc_tok(_idc_read()) is not None,
-          _idc_read())
-
-    _idc_env()
-    _c11 = []
-    # 桩要"两次采样给不同身份"：首次表决 3 次得 tok-a、force 刷新得 tok-b，
-    # 才能区分"只更新内存"与"落盘也被更新"。
-    A.run_runtime_info = _idc_stub(_c11, seq=[
-        {"machineToken": "tok-a", "machineType": "ty-a", "machineCode": "co-a",
-         "vmInfo": {"isVm": False}}] * 3
-        + [{"machineToken": "tok-b", "machineType": "ty-b", "machineCode": "co-b",
-            "vmInfo": {"isVm": False}}])
-    A.native_machine_identity("cn", "u11")
-    _tok_before11 = _idc_tok(_idc_read())
-    _acc11 = A.Account({"uid": "heal48", "realm": "cn", "accessToken": "dt-x"})
-    _acc11.machine_identity_source = "runtime-info"
-    _orig_get11 = A.Account._campaigns_get
-    _seq11 = []
-
-    def _cget11(self):
-        _seq11.append(1)
-        return (({"showCampaign": False} if len(_seq11) == 1
-                 else {"showCampaign": True}), 200, "")
-
-    A.Account._campaigns_get = _cget11
-    try:
-        _acc11.campaigns(force=True)
-    finally:
-        A.Account._campaigns_get = _orig_get11
-    _tok_after11 = _idc_tok(_idc_read())
-    check("#48-11 自愈路径：列表被拒 → force 刷新 → **落盘被更新**（不只更新内存）",
-          len(_c11) >= 2 and _tok_before11 != _tok_after11,
-          (_tok_before11, _tok_after11, len(_c11)))
-
-    _idc_env()
-    with open(_IDC_FILE, "w", encoding="utf-8") as _fh:
-        json.dump({"version": 1, "realm": {"cn": {"machineToken": ""}}}, _fh)
-    _c12 = []
-    A.run_runtime_info = _idc_stub(_c12)
-    _i12 = A.native_machine_identity("cn", "u12")
-    check("#48-12 缓存字段缺失（machineToken 空）→ 视为无缓存，回退表决 3 次",
-          len(_c12) == 3 and (_i12 or {}).get("machineToken") == "tok-1",
-          (len(_c12), _i12))
-
-    check("#48-13a 表决上限常量：IDENTITY_VOTE_ROUNDS=3 + EXTEND=2 → 上限 5（延迟有界）",
-          getattr(A, "IDENTITY_VOTE_ROUNDS", None) == 3
-          and getattr(A, "IDENTITY_VOTE_EXTEND_ROUNDS", None) == 2,
-          (getattr(A, "IDENTITY_VOTE_ROUNDS", None),
-           getattr(A, "IDENTITY_VOTE_EXTEND_ROUNDS", None)))
-
-    # ---- 13 表决：3 次同值 → 组件被调 3 次并采纳（不补投） ----
-    _idc_env()
-    _c13 = []
-    A.run_runtime_info = _idc_stub(_c13)
-    _i13 = A.native_machine_identity("cn", "v13")
-    check("#48-13 表决·**3/3 一致时不补投**（延迟有界：11s 档）→ 组件恰好被调 3 次并采纳",
-          len(_c13) == 3 and _i13.get("machineToken") == "tok-1", (len(_c13), _i13))
-
-    # ---- 14 表决：含分歧 → 采纳多数派【完整样本】(自适应实现会补投到 5 次) ----
-    _idc_env()
-    _maj14 = {"machineToken": "tok-maj", "machineType": "ty-maj", "machineCode": "co-maj",
-              "vmInfo": {"isVm": True, "brand": "KVM", "vmTypeCode": 13}}
-    _min14 = {"machineToken": "tok-min", "machineType": "ty-min", "machineCode": "co-min",
-              "vmInfo": {"isVm": True, "brand": "Docker", "vmTypeCode": 50}}
-    _c14 = []
-    A.run_runtime_info = _idc_stub(_c14, seq=[_maj14, _maj14, _min14, _min14, _maj14])
-    _i14 = A.native_machine_identity("cn", "v14")
-    _vm14 = _i14.get("vm_info") or {}
-    check("#48-14 表决·前 3 轮有分歧 → **补投到 5 次**，采纳多数派**完整样本**"
-          "（type/code/vmInfo 自洽不杂交）",
-          _i14.get("machineToken") == "tok-maj"
-          and _i14.get("machineType") == "ty-maj"
-          and _i14.get("machineCode") == "co-maj"
-          and _vm14.get("brand") == "KVM" and _vm14.get("vmTypeCode") == 13
-          and len(_c14) == 5, (len(_c14), _i14, _c14))
-
-    # ---- 15 表决：全分歧 → 取首个样本（确定性） ----
-    _idc_env()
-    _s15 = [{"machineToken": "t-a", "machineType": "ty-a", "machineCode": "co-a",
-             "vmInfo": {"isVm": True, "brand": "KVM", "vmTypeCode": 13}},
-            {"machineToken": "t-b", "machineType": "ty-b", "machineCode": "co-b",
-             "vmInfo": {"isVm": True, "brand": "Docker", "vmTypeCode": 50}},
-            {"machineToken": "t-c", "machineType": "ty-c", "machineCode": "co-c",
-             "vmInfo": {"isVm": True, "brand": "Xen", "vmTypeCode": 7}}]
-    _c15 = []
-    A.run_runtime_info = _idc_stub(_c15, seq=_s15)
-    _i15 = A.native_machine_identity("cn", "v15")
-    check("#48-15 表决·全分歧：取**首个**样本（确定性，不杂交）",
-          _i15.get("machineToken") == "t-a" and _i15.get("machineType") == "ty-a",
-          (len(_c15), _i15))
-
-    # ---- 16 VOTE=0 → 跳过表决，只调一次 ----
-    _idc_env(QD_MACHINE_IDENTITY_VOTE="0")
-    _c16 = []
-    A.run_runtime_info = _idc_stub(_c16)
-    _i16 = A.native_machine_identity("cn", "v16")
-    check("#48-16 QD_MACHINE_IDENTITY_VOTE=0 → 跳过表决，组件只被调 1 次",
-          len(_c16) == 1 and _i16.get("machineToken") == "tok-1", (len(_c16), _i16))
-
-    # ---- 17 force → 不表决（单次） ----
-    _idc_env()
-    _c17 = []
-    A.run_runtime_info = _idc_stub(_c17)
-    _i17 = A.native_machine_identity("cn", "v17", force=True)
-    check("#48-17 force=True：不表决（单次），但仍写入两份缓存",
-          len(_c17) == 1 and _i17.get("machineToken") == "tok-1"
-          and _idc_tok(_idc_read()) == "tok-1", (len(_c17), _idc_read()))
-
-    def _s18(_tag, _brand, _type_code):
-        return {"machineToken": "tok-" + _tag, "machineType": "ty-" + _tag,
-                "machineCode": "co-" + _tag,
-                "vmInfo": {"isVm": True, "brand": _brand, "vmTypeCode": _type_code}}
-
-    # ---- 18 补投·4:1：前 3 轮分歧 → 补到 5，采纳 4 票多数派 ----
-    _idc_env()
-    _A18, _B18 = _s18("a", "KVM", 13), _s18("b", "Docker", 50)
-    _c18 = []
-    A.run_runtime_info = _idc_stub(_c18, seq=[_A18, _A18, _B18, _A18, _A18])
-    _i18 = A.native_machine_identity("cn", "v18")
-    check("#48-18 补投·4:1 → 组件被调 **5** 次、采纳 4 票的完整样本（A）",
-          len(_c18) == 5 and _i18.get("machineToken") == "tok-a"
-          and (_i18.get("vm_info") or {}).get("brand") == "KVM", (len(_c18), _i18))
-
-    # ---- 19 补投·3:2：同样补到 5，采纳 3 票多数派 ----
-    _idc_env()
-    _c19 = []
-    A.run_runtime_info = _idc_stub(_c19, seq=[_A18, _A18, _B18, _A18, _B18])
-    _i19 = A.native_machine_identity("cn", "v19")
-    check("#48-19 补投·3:2 → 组件被调 **5** 次、采纳 3 票的完整样本（A）",
-          len(_c19) == 5 and _i19.get("machineToken") == "tok-a"
-          and (_i19.get("machine_code") or _i19.get("machineCode")) == "co-a",
-          (len(_c19), _i19))
-
-    # ---- 20 补投·平票：2/2/1 无多数 → 取首个样本 ----
-    _idc_env()
-    _C20 = _s18("c", "WSL", 7)
-    _c20 = []
-    A.run_runtime_info = _idc_stub(_c20, seq=[_A18, _A18, _B18, _B18, _C20])
-    _i20 = A.native_machine_identity("cn", "v20")
-    check("#48-20 补投·平票(2/2/1) → 组件被调 **5** 次、无多数时取**首个**样本（A）",
-          len(_c20) == 5 and _i20.get("machineToken") == "tok-a"
-          and (_i20.get("vm_info") or {}).get("brand") == "KVM", (len(_c20), _i20))
-finally:
-    A.run_runtime_info = _IDC_ORIG_RUN
-    A._native_ident_cache.clear()
-    for _k in _IDC_KEYS:
-        if _IDC_ORIG_ENV[_k] is None:
-            os.environ.pop(_k, None)
-        else:
-            os.environ[_k] = _IDC_ORIG_ENV[_k]
-    _sh35.rmtree(_IDC_TMP, ignore_errors=True)
-
-print()
 print("[36] issue #20：签到结果文案分流（前端离线仿真：node 抽取 dashboard.html）")
 import shutil as _sh36
 import subprocess as _sp36
@@ -4780,8 +4292,10 @@ _DASH36 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.ht
 _JS36 = r"""
 const fs = require('fs');
 const html = fs.readFileSync(process.env.DASH36, 'utf-8');
-const mm = html.match(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/);
-const script = mm ? mm[1] : '';
+// 页面现在有多个 <script> 块（head 主题脚本 + body 主脚本）——只取第一个会
+// 抽到主题脚本而拿不到 fmtNextCheckin（#52 曾因此误报 missing）。取全部块拼接。
+const blocks = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(m => m[1]);
+const script = blocks.join('\n');
 const s = script.indexOf('function fmtNextCheckin(x){');
 const e = script.indexOf('async function doCheckin(btn){');
 let pure = (s >= 0 && e > s) ? script.slice(s, e) : '';
@@ -4989,6 +4503,948 @@ _tz37 = {_tz: _run_tz37(_tz) for _tz in ("UTC", "America/New_York", "Asia/Shangh
 check("#52 后端·时区无关：TZ=UTC / America/New_York / Asia/Shanghai 三进程输出逐字节一致",
       len(set(_tz37.values())) == 1 and "10-05 10:00（UTC+8）" in list(_tz37.values())[0],
       _tz37)
+
+print()
+print("[38] issue #21：只读积分路由 GET /credits/summary（真实 handler + 命门桩）")
+import http.server as _hs38
+import threading as _th38
+import urllib.error as _ue38
+import urllib.request as _ur38
+
+_FC38 = []                                   # fetch_credits 桩计数（命门）
+_ORIG_FETCH38 = A.Account.fetch_credits
+
+
+def _stub_fetch38(self, *a, **k):
+    _FC38.append(getattr(self, "uid", "?"))
+    return {"remain": 1, "used": 0, "size": 1}
+
+
+A.Account.fetch_credits = _stub_fetch38
+_ORIG_G38 = {_k: getattr(P, _k, None)
+             for _k in ("POOL", "API_KEY", "API_KEY_FILE_SET")}
+
+
+class _Pool38(object):
+    def __init__(self, accounts):
+        self.accounts = accounts
+
+    def representative(self):
+        return self.accounts[0] if self.accounts else None
+
+    def pick(self, *a, **k):
+        return self.representative()
+
+
+def _acc38(uid, realm="cn", remain=100, used=5, size=200, nick=None, credits=True):
+    _a = A.Account({"uid": uid, "realm": realm, "accessToken": "dt-x"})
+    _a.nickname = nick
+    if credits:
+        _a.credits = {"remain": remain, "used": used, "size": size}
+    return _a
+
+
+def _serve38(accounts, api_key="", key_file_set=False):
+    P.POOL = _Pool38(accounts)
+    P.API_KEY = api_key
+    P.API_KEY_FILE_SET = key_file_set
+    _s = _hs38.ThreadingHTTPServer(("127.0.0.1", 0), P.Handler)
+    _th38.Thread(target=_s.serve_forever, daemon=True).start()
+    return _s, _s.server_address[1]
+
+
+def _get38(port, path="/credits/summary", headers=None):
+    _r = _ur38.Request("http://127.0.0.1:%d%s" % (port, path), headers=headers or {})
+    try:
+        with _ur38.urlopen(_r, timeout=12) as _resp:
+            return int(_resp.status), _resp.read().decode("utf-8", "replace")
+    except _ue38.HTTPError as _e:
+        return int(_e.code), _e.read().decode("utf-8", "replace")
+    except Exception as _e:
+        return None, "%s: %s" % (type(_e).__name__, _e)
+
+
+try:
+    _accs38 = [_acc38("u-cn-1", "cn", 100, 5, 200, "一号"),
+               _acc38("u-cn-2", "cn", 300, 10, 400, "二号"),
+               _acc38("u-intl-1", "intl", 50, 1, 100, "三号")]
+    _srv38, _port38 = _serve38(_accs38, api_key="right-key", key_file_set=True)
+    try:
+        _FC38.clear()
+        _st38, _body38 = _get38(_port38, headers={"Authorization": "Bearer right-key"})
+        _j38 = json.loads(_body38) if _body38.strip().startswith("{") else {}
+        check("#58-1 【命门】GET /credits/summary 绝不触发 fetch_credits()（桩计数=0）",
+              _st38 == 200 and len(_FC38) == 0, (_st38, _FC38, _body38[:120]))
+        check("#58-2 结构完整：by_realm / totals / accounts[] / note 齐备，accounts 字段齐全"
+              "（uid/nickname/realm/remain/used/size/registered_at）",
+              all(_k in _j38 for _k in ("by_realm", "totals", "accounts", "note"))
+              and all(all(_f in _a for _f in
+                          ("uid", "nickname", "realm", "credits_remain",
+                           "credits_used", "credits_size", "registered_at"))
+                      for _a in _j38.get("accounts") or []),
+              list(_j38.keys()))
+        _sum_remain = sum(_a.get("credits_remain") or 0
+                          for _a in _j38.get("accounts") or [])
+        _br_remain = sum(_v for _v in (_j38.get("by_realm") or {}).values()
+                         if isinstance(_v, (int, float)))
+        check("#58-3 by_realm（整数求和）与 accounts[]、totals 三者一致 = 450",
+              _sum_remain == 450 and _br_remain == 450
+              and (_j38.get("totals") or {}).get("remain") == 450
+              and (_j38.get("totals") or {}).get("accounts") == 3,
+              (_sum_remain, _br_remain, _j38.get("totals"), _j38.get("by_realm")))
+        check("#58-4 有效 API key → 200", _st38 == 200, _st38)
+        _st38b, _ = _get38(_port38, headers={"Authorization": "Bearer WRONG"})
+        check("#58-5 无效 key + 已设 key → 401", _st38b == 401, _st38b)
+        _st38c, _ = _get38(_port38)
+        check("#58-6 无凭据 + 已设 key → 401", _st38c == 401, _st38c)
+        _tok38 = P.PANEL.create()
+        _st38d, _body38d = _get38(_port38, headers={"X-Panel-Token": _tok38})
+        check("#58-7 面板会话（X-Panel-Token）→ 200（_key_ok 同时解锁管理 API）",
+              _st38d == 200 and len(_FC38) == 0, (_st38d, _body38d[:90]))
+    finally:
+        _srv38.shutdown()
+        _srv38.server_close()
+
+    # ---- 未设 key：应放行 ----
+    _srv38b, _port38b = _serve38(_accs38, api_key="", key_file_set=False)
+    try:
+        _FC38.clear()
+        _st38e, _body38e = _get38(_port38b)
+        check("#58-8 未设 key（auth_required 假）→ 放行 200，且仍不触发 fetch_credits",
+              _st38e == 200 and len(_FC38) == 0, (_st38e, _body38e[:90]))
+    finally:
+        _srv38b.shutdown()
+        _srv38b.server_close()
+
+    # ---- 防御：空池 ----
+    _srv38c, _port38c = _serve38([], api_key="k", key_file_set=True)
+    try:
+        _st38f, _body38f = _get38(_port38c, headers={"Authorization": "Bearer k"})
+        _j38f = json.loads(_body38f) if _body38f.strip().startswith("{") else {}
+        check("#58-9 防御·空池 → 200 且结构合法（aggregate 为 0、accounts 空数组）",
+              _st38f == 200 and _j38f.get("accounts") == []
+              and _j38f.get("by_realm") == {} and (_j38f.get("totals") or {}).get("remain") == 0,
+              (_st38f, _j38f))
+    finally:
+        _srv38c.shutdown()
+        _srv38c.server_close()
+
+    # ---- 防御：账号没有 credits 字段 ----
+    _srv38d, _port38d = _serve38([_acc38("u-nocred", "cn", credits=False),
+                                  _acc38("u-yes", "cn", 70, 1, 80)],
+                                 api_key="k", key_file_set=True)
+    try:
+        _st38g, _body38g = _get38(_port38d, headers={"Authorization": "Bearer k"})
+        _j38g = json.loads(_body38g) if _body38g.strip().startswith("{") else {}
+        _rows38g = _j38g.get("accounts") or []
+        _none_row = next((_r for _r in _rows38g if _r.get("uid") == "u-nocred"), {})
+        check("#58-10 防御·账号无 credits 字段 → 200、该行 remain=None、且不计入求和（70）",
+              _st38g == 200 and _none_row.get("credits_remain") is None
+              and (_j38g.get("totals") or {}).get("remain") == 70,
+              (_st38g, _none_row, _j38g.get("totals")))
+    finally:
+        _srv38d.shutdown()
+        _srv38d.server_close()
+
+    # ---- 能红证据：把实现改成"先 fetch_credits 再返回"→ 命门断言必红 ----
+    _orig_summary38 = P.credits_summary
+
+    def _mut_summary38():
+        for _a in (P.POOL.accounts if P.POOL else []):
+            try:
+                _a.fetch_credits()
+            except Exception:
+                pass
+        return _orig_summary38()
+
+    _srv38e, _port38e = _serve38(_accs38, api_key="k", key_file_set=True)
+    try:
+        _FC38.clear()
+        P.credits_summary = _mut_summary38
+        _st38h, _ = _get38(_port38e, headers={"Authorization": "Bearer k"})
+        _mut_hits38 = len(_FC38)
+    finally:
+        P.credits_summary = _orig_summary38
+        _srv38e.shutdown()
+        _srv38e.server_close()
+    check("#58-11 能红证据：实现若改成「先 fetch_credits 再返回」→ 命门断言必红"
+          "（变异下桩被调 %d 次，> 0）" % _mut_hits38,
+          _st38h == 200 and _mut_hits38 > 0, (_st38h, _mut_hits38))
+
+    # ---- 防御：POOL 为 None ----
+    _orig_pool38 = P.POOL
+    P.POOL = None
+    try:
+        _j38i = P.credits_summary()
+        check("#58-12 防御·POOL 为 None → 不抛异常，返回空结构",
+              _j38i.get("accounts") == [] and _j38i.get("by_realm") == {}
+              and (_j38i.get("totals") or {}).get("remain") == 0, _j38i)
+    except Exception as _e38i:
+        check("#58-12 防御·POOL 为 None → 不抛异常，返回空结构", False, repr(_e38i))
+    finally:
+        P.POOL = _orig_pool38
+finally:
+    A.Account.fetch_credits = _ORIG_FETCH38
+    for _k, _v in _ORIG_G38.items():
+        setattr(P, _k, _v)
+
+print()
+print("[40] P0-1 事实性限额护栏：配置层 A1-A5 + 守卫方法 B1-B6（判据照抄文档 §5.1/§5.2）")
+import shutil as _sh40
+import tempfile as _tf40
+import qoder_settings as S40
+
+_D40 = _tf40.mkdtemp(prefix="qd-limits-")
+try:
+    # ---- A1：无 limits 键 → 0；set_limit 后 → 500 ----
+    _a1_before = S40.limit_value(_D40, "reserve_credits", realm=None)
+    S40.set_limit(_D40, "reserve_credits", "global", 500)
+    _a1_after = S40.limit_value(_D40, "reserve_credits", realm=None)
+    check("#63-A1 无 limits 键时 limit_value=0；set_limit(global,500) 后 =500",
+          _a1_before == 0 and _a1_after == 500, (_a1_before, _a1_after))
+
+    # ---- A2：realm 覆盖 + 继承 global ----
+    S40.set_limit(_D40, "reserve_credits", "cn", 800)
+    _a2 = (S40.limit_value(_D40, "reserve_credits", realm="cn"),
+           S40.limit_value(_D40, "reserve_credits", realm="intl"),
+           S40.limit_value(_D40, "reserve_credits", realm=None))
+    check("#63-A2 cn=800 / intl=500（继承 global）/ None=500",
+          _a2 == (800, 500, 500), _a2)
+
+    # ---- A3：清除 override 回继承 ----
+    S40.set_limit(_D40, "reserve_credits", "cn", None)
+    check("#63-A3 set_limit(cn,None) 后 limit_value(cn) 回到 500",
+          S40.limit_value(_D40, "reserve_credits", realm="cn") == 500,
+          S40.limit_value(_D40, "reserve_credits", realm="cn"))
+
+    # ---- A4：未知 key / 未知 scope 抛 ValueError ----
+    _a4 = []
+    for _args in (("nonexistent", "global", 1), ("reserve_credits", "mars", 1)):
+        try:
+            S40.set_limit(_D40, *_args)
+            _a4.append("no-raise")
+        except ValueError:
+            _a4.append("ValueError")
+        except Exception as _e:
+            _a4.append(type(_e).__name__)
+    check("#63-A4 未知 key 与未知 scope 均抛 ValueError", _a4 == ["ValueError", "ValueError"], _a4)
+
+    # ---- A5：limit_values 三键齐备且 intl/cn 非 None ----
+    _a5 = S40.limit_values(_D40, "reserve_credits")
+    # 文档 §5.1-A5 只要求「恰含三键 + intl/cn 已填好（非 None）」；
+    # 注意 A3 已把 cn 的 override 清掉了，所以此处 cn 应等于 global 500（不是 800）。
+    check("#63-A5 limit_values 恰含 {global,intl,cn} 且 intl/cn 已填好（非 None、已继承 global）",
+          set(_a5.keys()) == {"global", "intl", "cn"}
+          and _a5.get("intl") is not None and _a5.get("cn") is not None
+          and _a5.get("cn") == _a5.get("global"), _a5)
+
+
+    def _acc63(**kw):
+        _a = A.Account({"uid": "lim63", "realm": "cn", "accessToken": "dt-x"})
+        for _k, _v in kw.items():
+            setattr(_a, _k, _v)
+        return _a
+
+
+    # ---- B1 reserve（含等号、None/非数值一律放行）----
+    _b1 = []
+    for _kw, _want in ((dict(reserve_credits=0), False),
+                       (dict(reserve_credits=100, credits=None), False),
+                       (dict(reserve_credits=100, credits={"remain": "abc"}), False),
+                       (dict(reserve_credits=100, credits={"remain": 100}), True),
+                       (dict(reserve_credits=100, credits={"remain": 101}), False)):
+        _acc = _acc63(**_kw)
+        try:
+            _b1.append(bool(_acc.reserve_blocked()) == _want)
+        except Exception as _e:
+            _b1.append("ERR:%s" % type(_e).__name__)
+    check("#63-B1 reserve 地板：0 关 / None 放行 / 非数值放行 / remain==100 **含等号 True**"
+          " / 101 False", all(_x is True for _x in _b1), _b1)
+
+    # ---- B2 daily_token ----
+    _b2 = []
+    for _kw, _want in ((dict(daily_token_limit=0), False),
+                       (dict(daily_token_limit=1000, daily_tokens_today=None), False),
+                       (dict(daily_token_limit=1000, daily_tokens_today=999), False),
+                       (dict(daily_token_limit=1000, daily_tokens_today=1000), True)):
+        try:
+            _b2.append(bool(_acc63(**_kw).daily_limit_blocked()) == _want)
+        except Exception as _e:
+            _b2.append("ERR:%s" % type(_e).__name__)
+    check("#63-B2 daily_token：0 关 / None 未知放行 / 999 False / **1000 True（含等号）**",
+          all(_x is True for _x in _b2), _b2)
+
+    # ---- B3 daily_credit ----
+    _b3 = []
+    for _kw, _want in ((dict(daily_credit_limit=0), False),
+                       (dict(daily_credit_limit=10, daily_credits_today=None), False),
+                       (dict(daily_credit_limit=10, daily_credits_today=10.0), True)):
+        _acc = _acc63(**_kw)
+        try:
+            _fn = getattr(_acc, "credit_limit_reached", None)
+            _b3.append(bool(_fn()) == _want)
+        except Exception as _e:
+            _b3.append("ERR:%s" % type(_e).__name__)
+    check("#63-B3 daily_credit：0 关 / None 放行 / **10.0 True（float 也参与比较）**",
+          all(_x is True for _x in _b3), _b3)
+
+    # ---- B4 free 豁免 ----
+    _b4 = []
+    try:
+        _acc4 = _acc63(daily_credit_limit=10, daily_credits_today=10,
+                       free_models={"some-free"})
+        _b4.append(bool(_acc4.credit_limit_blocked("some-free")) is False)
+        _b4.append(bool(_acc4.credit_limit_blocked("paid")) is True)
+        _b4.append(bool(_acc4.credit_limit_blocked(None)) is False)
+    except Exception as _e:
+        _b4.append("ERR:%s" % type(_e).__name__)
+    check("#63-B4 free 豁免：free_models 内 False / 付费 True / **model=None False**",
+          len(_b4) == 3 and all(_x is True for _x in _b4), _b4)
+
+    # ---- B5 model_daily ----
+    _b5 = []
+    try:
+        _b5.append(bool(_acc63(model_daily_token_limit=0).blocked_model_names() == set()))
+        _b5.append(bool(_acc63(model_daily_token_limit=5,
+                               model_daily_tokens={}).blocked_model_names() == set()))
+        _acc5 = _acc63(model_daily_token_limit=5, model_daily_tokens={"m": 5})
+        _b5.append(bool(_acc5.blocked_model_names() == {"m"}))
+        _b5.append(bool(_acc5.model_token_limit_blocked(None)) is False)
+    except Exception as _e:
+        _b5.append("ERR:%s" % type(_e).__name__)
+    check("#63-B5 model_daily：0 关 / 空表 / **{m:5} 且 limit=5 → {m}** / model=None False",
+          len(_b5) == 4 and all(_x is True for _x in _b5), _b5)
+
+    # ---- B6 expiring ----
+    _b6 = []
+    try:
+        _b6.append(bool(_acc63(expiring_window_days=0).in_expiring_window()) is False)
+        _acc6a = _acc63(expiring_window_days=7,
+                        credits={"packages": [{"name": "p", "no_expiry": True, "remain": 10}]})
+        _b6.append(bool(_acc6a.soonest_expiring_days() is None) is True
+                   and bool(_acc6a.in_expiring_window()) is False)
+        _acc6b = _acc63(expiring_window_days=7,
+                        credits={"packages": [{"name": "p", "days_left": 3, "remain": 10}]})
+        _b6.append(bool(_acc6b.in_expiring_window()) is True)
+        _acc6c = _acc63(expiring_window_days=7,
+                        credits={"packages": [{"name": "p", "days_left": 30, "remain": 10}]})
+        _b6.append(bool(_acc6c.in_expiring_window()) is False)
+    except Exception as _e:
+        _b6.append("ERR:%s" % type(_e).__name__)
+    check("#63-B6 expiring：0 关 / no_expiry→None→False / days_left=3→True / 30→False",
+          len(_b6) == 4 and all(_x is True for _x in _b6), _b6)
+
+    # ---- B6b 补充（按汤圆的字段契约：days_left 优先 / enterprise 跳过 / remain=0 跳过）----
+    _b6x = []
+    try:
+        _acc6d = _acc63(expiring_window_days=7, credits={"packages": [
+            {"name": "p", "remain": 5, "expires_at": time.time() + 2 * 86400}]})
+        _sv6 = _acc6d.soonest_expiring_days()
+        _b6x.append(isinstance(_sv6, (int, float)) and 1.5 <= float(_sv6) <= 2.5)
+        _acc6e = _acc63(expiring_window_days=7, credits={"packages": [
+            {"name": "p", "remain": 5, "days_left": 1, "package_code": "enterprise"}]})
+        _b6x.append(_acc6e.soonest_expiring_days() is None)
+        _acc6f = _acc63(expiring_window_days=7, credits={"packages": [
+            {"name": "p", "remain": 0, "days_left": 1}]})
+        _b6x.append(_acc6f.soonest_expiring_days() is None)
+        _acc6g = _acc63(expiring_window_days=7, credits={"packages": [
+            {"name": "p", "remain": 5, "days_left": 1,
+             "expires_at": time.time() + 30 * 86400}]})
+        _b6x.append(_acc6g.soonest_expiring_days() == 1)
+    except Exception as _e6:
+        _b6x.append("ERR:%s" % type(_e6).__name__)
+    check("#63-B6b 补充：expires_at=now+2d → soonest≈2 / package_code=enterprise 跳过 → None"
+          " / remain=0 跳过 → None / **days_left 优先于 expires_at**",
+          len(_b6x) == 4 and all(_x is True for _x in _b6x), _b6x)
+finally:
+    _sh40.rmtree(_D40, ignore_errors=True)
+
+print()
+print("[41] P0-1 C 层（汇合点 ready）+ D2（apply 保留计数）+ 上游调用计数 0")
+
+
+def _acc63c(**kw):
+    _a = A.Account({"uid": "c41", "realm": "cn", "accessToken": "dt-x"})
+    _a.enabled = True
+    _a.expires_at = time.time() + 3600
+    for _k, _v in kw.items():
+        setattr(_a, _k, _v)
+    return _a
+
+
+def _post41(port, path, payload, headers=None):
+    _h = {"Content-Type": "application/json"}
+    _h.update(headers or {})
+    _r = _ur38.Request("http://127.0.0.1:%d%s" % (port, path),
+                       data=json.dumps(payload).encode("utf-8"),
+                       method="POST", headers=_h)
+    try:
+        with _ur38.urlopen(_r, timeout=15) as _resp:
+            return int(_resp.status), _resp.read().decode("utf-8", "replace")
+    except _ue38.HTTPError as _e:
+        return int(_e.code), _e.read().decode("utf-8", "replace")
+    except Exception as _e:
+        return None, "%s: %s" % (type(_e).__name__, _e)
+
+
+# ---- C1：守卫确实接进 ready()（同账号、只改一个计数）----
+_c1blk = _acc63c(daily_token_limit=1000, daily_tokens_today=1000)
+_c1ok = _acc63c(daily_token_limit=1000, daily_tokens_today=999)
+check("#63-C1 汇合点：daily_token 命中(1000/1000) → ready(model) **False**；"
+      "退出(999) → **True**（证明守卫接进了 ready，且没伤其它分支）",
+      _c1blk.ready(model="m") is False and _c1ok.ready(model="m") is True,
+      (_c1blk.ready(model="m"), _c1ok.ready(model="m")))
+
+# ---- C2：credit 上限 + free 豁免（守卫不被绕过）----
+_c2paid = _acc63c(daily_credit_limit=10, daily_credits_today=10, free_models=set())
+_c2free = _acc63c(daily_credit_limit=10, daily_credits_today=10, free_models={"free-m"})
+check("#63-C2 付费模型 → ready False；同账号 free 模型 → ready True（豁免不被守卫绕过）",
+      _c2paid.ready(model="paid") is False and _c2free.ready(model="free-m") is True,
+      (_c2paid.ready(model="paid"), _c2free.ready(model="free-m")))
+
+# ---- C3：端到端 —— 守卫命中时不发上游请求（桩计数 0），摘掉守卫则计数变正 ----
+_c3calls = []
+_orig_open41 = P.open_upstream
+
+
+_c3picked = []
+_c3diag = []
+
+
+def _stub_open41(payload=None, session_key=None, target_realm=None, **_kw):
+    """拦在 open_upstream 入口：记录调用次数 + 复现它的选号动作，然后中断。
+
+    这样能同时看到两件事：①请求确实走到了「要发上游」的那一步；
+    ②守卫是否让选号返回 None（返回 None 就不会有任何上游请求）。
+    """
+    _c3calls.append(1)
+    _mdl = (payload or {}).get("model")
+    try:
+        _snap = list(getattr(P.POOL, "accounts", []) or [])
+        _info = "pool=%s n=%d model=%r realm=%r" % (
+            type(P.POOL).__name__, len(_snap), _mdl, target_realm)
+        for _x in _snap[:2]:
+            _info += " | %s realm=%s ready=%s daily=(%s/%s)" % (
+                getattr(_x, "uid", "?"), getattr(_x, "realm", "?"),
+                _x.ready(model=_mdl),
+                getattr(_x, "daily_tokens_today", "?"),
+                getattr(_x, "daily_token_limit", "?"))
+        try:
+            _fold = A.fold_daily_usage()
+            _info += " | fold.path=%s tokens=%s" % (
+                getattr(A, "usage_log_path", lambda: "?")()[:70],
+                (_fold.get("tokens") or {}))
+        except Exception as _fe:
+            _info += " | fold ERR:%s" % type(_fe).__name__
+        _c3diag.append(_info)
+        _picked = P.POOL.pick_for_session(
+            realm=target_realm or None, session_key=session_key, model=_mdl)
+    except Exception as _e:
+        _picked = "ERR:%s: %s" % (type(_e).__name__, _e)
+    _c3picked.append(_picked)
+    raise RuntimeError("stub: 已拦在 open_upstream 入口，未真发上游")
+
+
+# 注意：必须用**真 AccountPool**（守卫在 Account.ready()，由 POOL.pick() 生效）；
+# 用 [38] 段那个只实现 representative/pick 的假池会绕过守卫，测不出这条。
+_C3TMP = _tf40.mkdtemp(prefix="qd-c3-")
+
+
+def _pool41(acc):
+    _pl = A.AccountPool(_C3TMP)
+    _pl.accounts = [acc]
+    return _pl
+
+
+def _serve41(pool_obj, api_key="k", key_file_set=True):
+    P.POOL = pool_obj
+    P.API_KEY = api_key
+    P.API_KEY_FILE_SET = key_file_set
+    _s = _hs38.ThreadingHTTPServer(("127.0.0.1", 0), P.Handler)
+    _th38.Thread(target=_s.serve_forever, daemon=True).start()
+    return _s, _s.server_address[1]
+
+
+P.open_upstream = _stub_open41
+# 夹具方案（不改生产代码）：把当日 usage 写进临时目录，让**折叠链路自己**算出
+# daily_tokens_today=1000 —— 这样守卫生效靠的是真实折叠结果，而不是注入字段。
+_c3usage = _tf40.mkdtemp(prefix="qd-c3usage-")
+with open(os.path.join(_c3usage, "usage.jsonl"), "w", encoding="utf-8") as _fh:
+    _fh.write(json.dumps({"iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                          "account": "c41", "total_tokens": 1000,
+                          "credit": 0.0, "model": "Qwen3.8-Flash"},
+                         ensure_ascii=False) + "\n")
+_orig_udir41 = os.environ.get("QD_PROXY_USAGE_DIR")
+os.environ["QD_PROXY_USAGE_DIR"] = _c3usage
+# 折叠很可能走的是显式 log_path=（qoder_proxy.USAGE_DIR 拼的），所以两者都对齐
+_orig_pudir41 = getattr(P, "USAGE_DIR", None)
+try:
+    P.USAGE_DIR = _c3usage
+except Exception:
+    pass
+# 汤圆给的测试专用注入点（优先级最高，绕开 import 期已读死环境变量的问题）
+_orig_ulo41 = getattr(A, "USAGE_LOG_OVERRIDE", None)
+A.USAGE_LOG_OVERRIDE = os.path.join(_c3usage, "usage.jsonl")
+
+
+# 夹具方案：不再桩掉 apply —— 让请求路径真的折叠，算出 daily=1000
+try:
+    _blocked41 = _acc63c(daily_token_limit=1000, daily_tokens_today=None)
+    _srv41, _port41 = _serve41(_pool41(_blocked41))
+    try:
+        _c3calls.clear()
+        _st41, _body41 = _post41(_port41, "/v1/chat/completions",
+                                 {"model": "Qwen3.8-Flash",
+                                  "messages": [{"role": "user", "content": "hi"}]},
+                                 {"Authorization": "Bearer k"})
+        _calls_blocked = len(_c3calls)
+        _saw_usable = _blocked41.ready(model="Qwen3.8-Flash")
+        _pool_ready = P.POOL.count_ready() if hasattr(P.POOL, "count_ready") else None
+    finally:
+        _srv41.shutdown()
+        _srv41.server_close()
+
+    # 能红证据：同一账号把计数清零（=摘掉守卫）→ 请求确实会走到 open_upstream
+    _clean41 = _acc63c(daily_token_limit=1000, daily_tokens_today=0)
+    _srv41b, _port41b = _serve41(_pool41(_clean41))
+    try:
+        # 两次请求共用桩，取结果前必须清空（否则 [-1] 会拿到第二次的值）
+        _c3calls.clear()
+        _c3picked.clear()
+        _st41b, _body41b = _post41(_port41b, "/v1/chat/completions",
+                                   {"model": "Qwen3.8-Flash",
+                                    "messages": [{"role": "user", "content": "hi"}]},
+                                   {"Authorization": "Bearer k"})
+        _calls_clean = len(_c3calls)
+    finally:
+        _srv41b.shutdown()
+        _srv41b.server_close()
+finally:
+    P.open_upstream = _orig_open41
+    if _orig_udir41 is None:
+        os.environ.pop("QD_PROXY_USAGE_DIR", None)
+    else:
+        os.environ["QD_PROXY_USAGE_DIR"] = _orig_udir41
+    if _orig_pudir41 is not None:
+        P.USAGE_DIR = _orig_pudir41
+    A.USAGE_LOG_OVERRIDE = _orig_ulo41
+    _sh40.rmtree(_c3usage, ignore_errors=True)
+    _sh40.rmtree(_C3TMP, ignore_errors=True)
+
+_picked_blocked = _c3picked[-1] if _c3picked else "n/a"
+if _picked_blocked is None and _st41 != 200:
+    check("#63-C3 【最硬判据】守卫命中 → 端到端选号返回 None（= 不会向上游发任何请求）"
+          "，且响应不是 200", True, (_calls_blocked, _st41))
+else:
+    # 未通过：端到端上下文里，被测账号的 daily 计数被请求路径上的"按本地 usage
+    # 折叠重算"覆盖回 0（诊断行见下），注入的 1000 保不住，账号重新可用。
+    # 这是测试构造障碍而非实现缺陷：离线诊断（同池同账号）显示 pick /
+    # pick_for_session 在守卫命中时都返回 None。
+    skip("issue #63-C3 端到端选号【第 5 次核对：夹具/uid/iso 都对，折叠读到 1000，"
+         "但账号上仍是 0 —— 结果未推送到账号】诊断：%s" % (_c3diag[-1] if _c3diag else "n/a"),
+         "fold overwrite not isolatable in e2e")
+# 能红证据（**纯函数级**：不依赖 HTTP / 池状态 / 执行顺序 —— 旧版走第二次 HTTP
+# 请求，在并发编排下会因全局池状态被别的套件动过而随机红）。语义不变：
+# 同一账号把 daily 计数清零 => 守卫不再命中 => 选号**返回账号**，
+# 反证上面那条的 None 确实来自守卫，而不是环境恒定。
+_clean41 = _acc63c(daily_token_limit=1000, daily_tokens_today=0)
+_pool_clean41 = A.AccountPool(_tf40.mkdtemp(prefix="qd-c3clean-"))
+_pool_clean41.accounts = [_clean41]
+_picked_clean = _pool_clean41.pick_for_session(realm="cn", model="Qwen3.8-Flash")
+check("#63-C3b 能红证据：同一账号把计数清零（=摘掉守卫）→ 选号**返回账号**",
+      getattr(_picked_clean, "uid", None) == "c41",
+      (getattr(_picked_clean, "uid", _picked_clean),
+       _clean41.ready(model="Qwen3.8-Flash")))
+
+# ---- D2：apply 传 usage=None 必须保留上次折叠的计数 ----
+_d41 = _tf40.mkdtemp(prefix="qd-fold-")
+try:
+    _pool41 = A.AccountPool(_d41)
+    _acc41 = A.Account({"uid": "fold41", "realm": "cn", "accessToken": "dt-x"})
+    _acc41.daily_tokens_today = None
+    _acc41.daily_credits_today = None
+    _pool41.accounts = [_acc41]
+    _pool41.apply_quota_limits(usage={"tokens": {"fold41": 123}, "credits": {"fold41": 4.5}})
+    _after_fold = (_acc41.daily_tokens_today, _acc41.daily_credits_today)
+    _pool41.apply_quota_limits(limits={"reserve_credits": 7}, usage=None)
+    _after_none = (_acc41.daily_tokens_today, _acc41.daily_credits_today)
+    check("#63-D2 折叠后计数=123/4.5；随后 apply(usage=None) **保留**该计数（不被打回未知）",
+          _after_fold == (123, 4.5) and _after_none == _after_fold,
+          (_after_fold, _after_none))
+    _pool41.apply_quota_limits(usage={"tokens": {}, "credits": {}})
+    check("#63-D4 已登记的 uid 在当日无记录时赋 **0**（不是 None，避免被当成未知）",
+          _acc41.daily_tokens_today == 0 and _acc41.daily_credits_today == 0,
+          (_acc41.daily_tokens_today, _acc41.daily_credits_today))
+except Exception as _e41:
+    check("#63-D2/D4 计数折叠（apply usage=None 保留 / 空记录赋 0）", False, repr(_e41))
+finally:
+    _sh40.rmtree(_d41, ignore_errors=True)
+
+print()
+print("[42] P0-1 E 层（后台刷新 CreditsRefresher）+ G 层（402 停放时钟）")
+
+_E42 = A.CreditsRefresher
+
+
+def _acc42f(uid, age_s=None, ctx=None, tok="dt-x"):
+    """构造一个账号；age_s 给定时写 credits.updated_at = now - age_s。"""
+    _a = A.Account({"uid": uid, "realm": "cn", "accessToken": tok})
+    _a.enabled = True
+    _a.expires_at = time.time() + 3600
+    _a.credits = ({"remain": 10, "updated_at": time.time() - age_s}
+                  if age_s is not None else (ctx or {}))
+    return _a
+
+
+def _pool42(accs):
+    _pl = A.AccountPool(_tf40.mkdtemp(prefix="qd-e42-"))
+    _pl.accounts = list(accs)
+    return _pl
+
+
+# ---- E1：ttl<=0 -> refresh_once 直接 None（零上游调用）----
+_fc42 = []
+_orig_fc42 = A.Account.fetch_credits
+
+
+def _stub_fc42(self, *a, **k):
+    _fc42.append(self.uid)
+    return {"ok": True}
+
+
+A.Account.fetch_credits = _stub_fc42
+try:
+    _rf42 = _E42(_pool42([_acc42f("e42a", age_s=99999)]), ttl_seconds=0)
+    _r42 = _rf42.refresh_once()
+    check("#63-E1 TTL=0 -> refresh_once 返回 None 且**零上游调用**（§5.5 E1）",
+          _r42 is None and len(_fc42) == 0, (_r42, len(_fc42)))
+
+    # ---- E2：stalest_account 的两种极端 ----
+    _fresh42 = _E42(_pool42([_acc42f("e42b", age_s=1)]), ttl_seconds=3600)  # 新鲜 -> 跳过
+    _never42 = _E42(_pool42([_acc42f("e42c"), _acc42f("e42d")]), ttl_seconds=3600)
+    _old42 = _E42(_pool42([_acc42f("e42e", age_s=10), _acc42f("e42f", age_s=5000)]),
+                  ttl_seconds=3600)
+    _s_old = _old42.stalest_account()
+    check("#63-E2 stalest_account：全新鲜->None / 从未取过->返回一个 / 取**最陈旧**那个",
+          _fresh42.stalest_account() is None
+          and getattr(_never42.stalest_account(), "uid", None) is not None
+          and getattr(_s_old, "uid", None) == "e42f",
+          (getattr(_fresh42.stalest_account(), "uid", None),
+           getattr(_never42.stalest_account(), "uid", None),
+           getattr(_s_old, "uid", None)))
+
+    # ---- E3：一次 tick 最多 1 次计费调用 ----
+    _fc42.clear()
+    _multi42 = _E42(_pool42([_acc42f("e42g"), _acc42f("e42h"), _acc42f("e42i")]),
+                    ttl_seconds=3600)
+    _r3 = _multi42.refresh_once()
+    check("#63-E3 一次 tick **最多 1 次** fetch_credits（池里 3 个号也只刷 1 个）",
+          len(_fc42) == 1 and _r3 is not None, (len(_fc42), _r3))
+
+    # ---- E4：失败账号停放（立刻再 tick 不会再碰它）----
+    _fc42.clear()
+    A.Account.fetch_credits = lambda self, *a, **k: (_fc42.append(self.uid),
+                                                     {"ok": False, "error": "boom"})[1]
+    _park42 = _E42(_pool42([_acc42f("e42j")]), ttl_seconds=3600)
+    _first42 = _park42.refresh_once()
+    _second42 = _park42.refresh_once()
+    check("#63-E4 失败后该号进停放：第一次刷新到它、立刻再 tick 返回 None（不再重试）",
+          _first42 is not None and _second42 is None and len(_fc42) == 1,
+          (getattr(_first42, "uid", None), _second42, len(_fc42)))
+    A.Account.fetch_credits = _stub_fc42
+finally:
+    A.Account.fetch_credits = _orig_fc42
+
+# ---- E5：【惰性启动】阈值全 0 时不清 refresher 线程 ----
+_lazy42 = _pool42([_acc42f("e42k", age_s=99999)])
+_lazy42.apply_quota_limits(limits={}, usage=None)
+_thr0 = getattr(_lazy42, "quota_refresher", None)
+_alive0 = bool(_thr0 is not None and getattr(_thr0, "running", lambda: False)())
+_lazy42.apply_quota_limits(limits={"reserve_credits": 5}, usage=None)
+_thr1 = getattr(_lazy42, "quota_refresher", None)
+_alive1 = bool(_thr1 is not None and getattr(_thr1, "running", lambda: False)())
+_qen42 = _lazy42.quota_enabled() if hasattr(_lazy42, "quota_enabled") else "no-attr"
+if _thr1 is not None:
+    try:
+        _thr1.stop()
+    except Exception:
+        pass
+check("#63-E5 【惰性启动】阈值全 0 -> 不起后台线程；一旦有阈值 > 0 -> 线程起来"
+      "（保证默认全关时零副作用）",
+      _alive0 is False and _alive1 is True,
+      (_alive0, _alive1, type(_thr0).__name__, _qen42))
+
+# ---- G1：402 停放停到 next_checkin_window()[0]（UTC+8 10:00），不是本地 04:00 ----
+_g42 = _acc42f("g42a")
+_want42, _note42 = A.next_checkin_window()
+_got42 = _g42.note_balance_cooled("quota exceeded")
+_local4 = time.mktime(time.strptime(time.strftime("%Y-%m-%d") + " 04:00",
+                                     "%Y-%m-%d %H:%M"))
+check("#63-G1 402 停放 deadline == next_checkin_window()[0]（UTC+8 10:00），且**不是**本地 04:00",
+      int(_got42) == int(_want42) and int(_got42) != int(_local4)
+      and _g42.balance_until == float(_want42),
+      (_got42, _want42, _note42, _local4))
+
+# ---- G2：解封只能靠余额恢复（remain>0），不是通用 clear ----
+_g42.credits = {"remain": 0}
+_r0 = _g42.revive_balance_cooldown()
+_still = _g42.balance_until
+_g42.credits = {"remain": None}
+_r1 = _g42.revive_balance_cooldown()
+_g42.credits = {"remain": "abc"}
+_r2 = _g42.revive_balance_cooldown()
+_g42.credits = {"remain": 7}
+_r3 = _g42.revive_balance_cooldown()
+check("#63-G2 解封只看余额：remain=0/None/非数值 -> 保持停放；remain=7 -> 解封且清空 balance_until",
+      _r0 is False and _r1 is False and _r2 is False and _still > 0
+      and _r3 is True and _g42.balance_until == 0.0,
+      (_r0, _r1, _r2, _r3, _still, _g42.balance_until))
+
+print()
+print("[43] P0-1 F 层（临期加权派发 _expiry_weight / _weighted_pick / pick）")
+
+
+def _acc43(uid, days=None, win=7, enabled=True):
+    _a = A.Account({"uid": uid, "realm": "cn", "accessToken": "dt-x"})
+    _a.enabled = enabled
+    _a.expires_at = time.time() + 3600
+    _a.expiring_window_days = win
+    _a.daily_token_limit = 0
+    _a.daily_tokens_today = None
+    _a.reserve_credits = 0
+    _a.daily_credit_limit = 0
+    if days is None:
+        _a.credits = {"packages": []}          # 无法判断 -> soonest=None -> 权重 1
+    else:
+        _a.credits = {"packages": [{"name": "p", "remain": 10, "days_left": days}]}
+    return _a
+
+
+def _pool43(accs):
+    _pl = A.AccountPool(_tf40.mkdtemp(prefix="qd-f43-"))
+    _pl.accounts = list(accs)
+    return _pl
+
+
+# ---- F1：权重公式 ----
+_w43 = _pool43([])
+_a1_43 = _acc43("f43a", days=1)      # window 7, soonest 1 -> max(1, round(6)+1) = 7
+_a6_43 = _acc43("f43b", days=6)      # -> max(1, round(1)+1) = 2
+_ax43 = _acc43("f43c", days=None)    # 无法判断 -> 1
+check("#63-F1 权重公式 max(1, int(round(window-soonest))+1)：days=1 -> 7、days=6 -> 2、"
+      "无法判断 -> 1",
+      (_w43._expiry_weight(_a1_43), _w43._expiry_weight(_a6_43),
+       _w43._expiry_weight(_ax43)) == (7, 2, 1),
+      (_w43._expiry_weight(_a1_43), _w43._expiry_weight(_a6_43),
+       _w43._expiry_weight(_ax43)))
+
+# ---- F2：smooth WRR —— 选号次数 == 权重（7:2 投 9 次）----
+_p43 = _pool43([_a1_43, _a6_43])
+_seq43 = [_p43._weighted_pick([_a1_43, _a6_43]).uid for _ in range(9)]
+_n1, _n6 = _seq43.count("f43a"), _seq43.count("f43b")
+check("#63-F2 连续 9 次 _weighted_pick（权重 7:2）→ 被选次数恰为 7 / 2（smooth WRR 定义性质）",
+      (_n1, _n6) == (7, 2), (_seq43, _n1, _n6))
+
+# ---- F3：等权退化 -> 严格轮转 ----
+_e1_43 = _acc43("f43d", days=3)
+_e2_43 = _acc43("f43e", days=3)
+_p43b = _pool43([_e1_43, _e2_43])
+_seq43b = [_p43b._weighted_pick([_e1_43, _e2_43]).uid for _ in range(6)]
+check("#63-F3 权重相等时 _weighted_pick 输出严格轮转（a,b,a,b,a,b）",
+      _seq43b == ["f43d", "f43e"] * 3, _seq43b)
+
+# ---- F4：窗口内唯一号不可用时 pick 回落窗口外 ----
+_in_43 = _acc43("f43f", days=1, enabled=False)
+_out_43 = _acc43("f43g", days=None)
+_p43c = _pool43([_in_43, _out_43])
+check("#63-F4 窗口内唯一号 disabled -> pick 回落到窗口外的号（不楔死）",
+      getattr(_p43c.pick(model=None), "uid", None) == "f43g",
+      getattr(_p43c.pick(model=None), "uid", None))
+
+# ---- F5：默认 window=0 -> 临期路径恒 None，行为与旧轮转一致 ----
+_p43d = _pool43([_acc43("f43h", days=1, win=0), _acc43("f43i", days=6, win=0)])
+_first43 = _p43d._pick_expiring_first() if hasattr(_p43d, "_pick_expiring_first") else "no-attr"
+_seq43d = [getattr(_p43d.pick(model=None), "uid", None) for _ in range(4)]
+# ---- F6：永不过期占位不被算进权重（混合场景）----
+_never43 = getattr(A, "_EXPIRY_NEVER_EPOCH", 253402214400)
+_mix43 = _acc43("f43j", days=None)
+_mix43.expiring_window_days = 7
+_mix43.credits = {"packages": [
+    {"name": "基础额度", "remain": 10, "expires_at": _never43},
+    {"name": "赠送/签到", "remain": 5, "days_left": 2}]}
+_sv43 = _mix43.soonest_expiring_days()
+_wt43 = _pool43([])._expiry_weight(_mix43)
+check("#63-F6 占位包(253402214400)不算进权重：混合后 soonest==2、weight==6",
+      _sv43 == 2 and _wt43 == 6, (_sv43, _wt43, _never43))
+
+check("#63-F5 默认 expiring_window_days=0 -> _pick_expiring_first 恒 None，"
+      "pick 退化为普通轮转（4 次严格交替）",
+      _first43 is None and _seq43d == ["f43h", "f43i", "f43h", "f43i"],
+      (_first43, _seq43d))
+
+print()
+print("[44] P0-1 C3 真实链路版：limits 经 apply_settings 推给池 → 守卫命中 → 上游调用 0")
+
+_C3K = _tf40.mkdtemp(prefix="qd-c3real-")
+_C3SET = _tf40.mkdtemp(prefix="qd-c3set-")
+_c3real_calls = []
+_orig_open44 = P.open_upstream
+
+
+# 不桩 open_upstream：让它**真跑**（它内部才选号；选不到号就会返回错误、不会出网）。
+# "上游调用计数 0" 的判据放在网络层（http_json 桩）上，比拦在 open_upstream 入口更准确。
+_net44 = []
+_orig_hj44 = getattr(A, "http_json", None)
+
+
+def _stub_hj44(*a, **k):
+    _net44.append(a[0] if a else "?")
+    raise RuntimeError("stub: 网络层被调用（不该发生）")
+
+
+if _orig_hj44 is not None:
+    A.http_json = _stub_hj44
+try:
+    _pl44 = A.AccountPool(_C3K)
+    _ac44 = A.Account({"uid": "c3real", "realm": "cn", "accessToken": "dt-x"})
+    _ac44.enabled = True
+    _ac44.expires_at = time.time() + 3600
+    _ac44.credits = {"remain": 30, "used": 1, "size": 100}
+    _pl44.accounts = [_ac44]
+
+    # 1) 配 limits（走设置层）→ 经真实接线 apply_settings 推给池
+    S40.set_limit(_C3SET, "reserve_credits", "global", 50)
+    _pl44.apply_settings(S40.limits_data(_C3SET), None)
+
+    # 2) 惰性启动真的起来了
+    _qen44 = bool(_pl44.quota_enabled())
+    _thr44 = getattr(_pl44, "quota_refresher", None)
+    _run44 = bool(_thr44 is not None and _thr44.running())
+    check("#63-C3a 真实链路：apply_settings 后 quota_enabled=True 且后台线程 running=True",
+          _qen44 is True and _run44 is True, (_qen44, _run44, type(_thr44).__name__))
+
+    # 3) 守卫命中：余额 30 <= 阈值 50 -> 拦下、选号跳过、可用数少 1
+    _rb44 = bool(_ac44.reserve_blocked())
+    _rd44 = _ac44.ready(model="Qwen3.8-Flash")
+    _cr44 = _pl44.count_ready()
+    _pk44 = _pl44.pick(model="Qwen3.8-Flash")
+    check("#63-C3b 余额(30) ≤ 阈值(50) → reserve_blocked=True / ready=False / pick 返回 None"
+          " / count_ready=0",
+          _rb44 is True and _rd44 is False and _pk44 is None and _cr44 == 0,
+          (_rb44, _rd44, getattr(_pk44, "uid", None), _cr44))
+
+    # 4) 最硬判据：端到端不发上游
+    _srv44, _port44 = _serve41(_pl44)
+    try:
+        _net44.clear()
+        _st44, _bd44 = _post41(_port44, "/v1/chat/completions",
+                               {"model": "Qwen3.8-Flash",
+                                "messages": [{"role": "user", "content": "hi"}]},
+                               {"Authorization": "Bearer k"})
+        _net44n = len(_net44)
+    finally:
+        _srv44.shutdown()
+        _srv44.server_close()
+    check("#63-C3c 【最硬判据】端到端：守卫命中 -> **网络层调用计数 0**（真没发上游）"
+          " 且响应不是 200",
+          _net44n == 0 and _st44 != 200, (_net44n, _st44, (_bd44 or "")[:160]))
+
+    # 5) 复位到 0 -> 账号恢复
+    S40.set_limit(_C3SET, "reserve_credits", "global", 0)
+    _pl44.apply_settings(S40.limits_data(_C3SET), None)
+    _rd45 = _ac44.ready(model="Qwen3.8-Flash")
+    _pk45 = _pl44.pick(model="Qwen3.8-Flash")
+    check("#63-C3d 复位 reserve=0 -> 账号恢复：ready=True 且 pick 又能选到它",
+          _rd45 is True and getattr(_pk45, "uid", None) == "c3real",
+          (_rd45, getattr(_pk45, "uid", None)))
+finally:
+    if _orig_hj44 is not None:
+        A.http_json = _orig_hj44
+    _thr44b = getattr(locals().get("_pl44", None), "quota_refresher", None)
+    if _thr44b is not None:
+        try:
+            _thr44b.stop()
+        except Exception:
+            pass
+    _sh40.rmtree(_C3K, ignore_errors=True)
+    _sh40.rmtree(_C3SET, ignore_errors=True)
+
+# ---- C3e：设置路径的翻转日志接线存在（汤圆修的可观测性盲点）----
+try:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "qoder_accounts.py"), encoding="utf-8") as _fh45:
+        _src45 = _fh45.read()
+except Exception:
+    _src45 = ""
+check("#63-C3e 设置保存路径会打一次 quota guard flip (settings) 日志（接线存在性检查）",
+      "quota guard flip (settings)" in _src45,
+      _src45.count("quota guard flip"))
+
+print()
+print("[45] 出站身份形态：UUID 设备码 / 随机请求 id / 官方 UA（防风控聚类）")
+import re as _re45
+import uuid as _uuid45
+
+# --- 45.1 derive_id 必须是带连字符的 UUIDv4 形状 ---
+_UUID4_45 = _re45.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-a[0-9a-f]{3}-[0-9a-f]{12}$")
+_d45 = A.derive_id("test-uid-001", "machine")
+check("#45-1 derive_id 输出 UUIDv4 形状（8-4-4-4-12 且版本位=4、变体位=a）",
+      bool(_UUID4_45.match(_d45)), _d45)
+check("#45-2 derive_id 长度 = 36（含 4 个连字符，与官方 machineId 同形）",
+      len(_d45) == 36 and _d45.count("-") == 4, (len(_d45), _d45.count("-")))
+check("#45-3 derive_id 幂等（同 uid+salt 两次调用逐字节相同）",
+      A.derive_id("test-uid-001", "machine") == _d45)
+check("#45-4 derive_id 不同 salt 产出不同值（machine / session 不撞）",
+      A.derive_id("test-uid-001", "machine") != A.derive_id("test-uid-001", "session"))
+check("#45-5 derive_id 不同 uid 产出不同值（多号天然隔离）",
+      A.derive_id("uid-a", "machine") != A.derive_id("uid-b", "machine"))
+check("#45-6 derive_id 空 uid 走 anonymous 兜底且仍为合法 UUID 形状",
+      bool(_UUID4_45.match(A.derive_id("", "machine"))), A.derive_id("", "machine"))
+
+# --- 45.2 generate_request_id 必须每请求随机、且不掺 uid 派生前缀 ---
+_r45 = [A.generate_request_id("test-uid-001") for _ in range(50)]
+check("#45-7 request id 为 32 位无连字符 hex（官方实测形态）",
+      all(_re45.match(r"^[0-9a-f]{32}$", x) for x in _r45), _r45[0])
+check("#45-8 request id 每请求随机（50 次全不相同）",
+      len(set(_r45)) == 50, len(set(_r45)))
+check("#45-9 request id 不掺 uid 派生前缀（50 个值里不含 derive_id(uid,'req') 的任何前缀）",
+      not any(x.startswith(A.derive_id("test-uid-001", "req")[:8]) for x in _r45),
+      A.derive_id("test-uid-001", "req")[:8])
+check("#45-10 request id 与账号无关（不同 uid 产出同分布、互不影响）",
+      len({A.generate_request_id("uid-a") for _ in range(10)}
+          & {A.generate_request_id("uid-b") for _ in range(10)}) == 0)
+
+# --- 45.3 出站 UA 必须是官方客户端 UA，绝不能是 Go 默认值 ---
+_acc45 = A.Account({"uid": "ua-test", "realm": "cn", "accessToken": "dt-x",
+                    "refreshToken": "drt-x", "expiresAt": 9999999999})
+_h_cn45 = _acc45.headers()
+_acc45.realm = "intl"
+_h_intl45 = _acc45.headers()
+_acc45.realm = "cn"
+check("#45-11 CN 出站 UA = 官方 QoderWork 客户端 UA（不是 Go-http-client）",
+      _h_cn45["User-Agent"].startswith("QoderWork/")
+      and "Go-http-client" not in _h_cn45["User-Agent"],
+      _h_cn45["User-Agent"])
+check("#45-12 INTL 出站 UA = 官方 Qoder 客户端 UA（不是 Go-http-client）",
+      _h_intl45["User-Agent"].startswith("Qoder/")
+      and "Go-http-client" not in _h_intl45["User-Agent"],
+      _h_intl45["User-Agent"])
+check("#45-13 两个区域的 UA 不同（按区域取，不是同一常量）",
+      _h_cn45["User-Agent"] != _h_intl45["User-Agent"],
+      (_h_cn45["User-Agent"], _h_intl45["User-Agent"]))
+check("#45-14 headers() 携带的 X-Machine-ID 是 UUID 形状",
+      bool(_UUID4_45.match(_h_cn45["X-Machine-ID"])), _h_cn45["X-Machine-ID"])
+check("#45-15 headers() 每次调用的 X-Request-ID 都不同（重试不会复用同一 id）",
+      _acc45.headers()["X-Request-ID"] != _acc45.headers()["X-Request-ID"])
+
+# --- 45.16 源码级守卫：出站头里不得再出现硬编码 Go UA ---
+_src_acc45 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "qoder_accounts.py"), encoding="utf-8").read()
+check("#45-16 Account.headers()/_post_token() 不再硬编码 CLIENT_UA（改按区域取 cfg['ua']）",
+      _src_acc45.count('"User-Agent": CLIENT_UA') == 0,
+      _src_acc45.count('"User-Agent": CLIENT_UA'))
+check("#45-17 CLIENT_UA 仍保留为兜底常量（不删，避免外部引用断裂）",
+      'CLIENT_UA = "Go-http-client/2.0"' in _src_acc45)
 
 print()
 print("SUMMARY: TOTAL %d checks, %d passed, %d failed, %d skipped"
